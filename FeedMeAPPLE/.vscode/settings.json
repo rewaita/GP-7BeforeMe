@@ -60,13 +60,13 @@
         "*.asset": "yaml",
         "*.meta": "yaml",
         "*.prefab": "yaml",
-        "*.unity": "yaml",
+        "*.unity": "yaml"
     },
     "explorer.fileNesting.enabled": true,
     "explorer.fileNesting.patterns": {
-        "*.sln": "*.csproj",
+        "*.sln": "*.csproj"
     },
-    "dotnet.defaultSolution": "FMAtameshi.sln",
+    "dotnet.defaultSolution": "FeedMeAPPLE.sln",
     "python-envs.defaultEnvManager": "ms-python.python:pyenv",
     "python-envs.pythonProjects": []
 }
