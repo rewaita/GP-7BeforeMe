@@ -6,59 +6,123 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System;
-using UnityEditor.SceneManagement;
+using System.Numerics;
+using Unity.VisualScripting;
+//using UnityEditor.SceneManagement;
 
 public class movP : MonoBehaviour
 {
-    private Vector3 startPos;
+    private UnityEngine.Vector3 startPos;
     private int pMCount;
     private int demoCount = 0;
-    private int demoMaxCount = 5;
+    private int demoMaxCount = 7;
     private bool isMoving = false;
 
-    private const int rewardGOAL = 200;
-    private const int rewardFALL = -100;
+    private const int rewardGOAL = 1000;
+    private const int rewardFALL = -500;
 
-    private StageManager stageGenerator;
+    private StageManager stageManager;
 
     private List<string> Plogs = new List<string>();
     private Rigidbody rb;
+    private Renderer rend;
+    private PlayerInput pInput;
+    private bool isGameActive = false;
+
+    private Dictionary<Vector2Int, int> visitedTiles = new Dictionary<Vector2Int, int>();
 
     void Start()
     {
-        stageGenerator = FindFirstObjectByType<StageManager>();
-        if(stageGenerator == null)
+        stageManager = FindFirstObjectByType<StageManager>();
+        if(stageManager == null)
         {
             Debug.LogError("StageManagerが見つかりません");
         }
         rb = GetComponent<Rigidbody>();
-        startPos = new Vector3(0, 2, 0);
+        rend = GetComponent<Renderer>();
+        pInput = GetComponent<PlayerInput>();
+        startPos = new UnityEngine.Vector3(0, 2, 0);
 
+        SetPlayerActive(false);    
+    }
+
+    public void OnStartButton()
+    {
+        if (isGameActive) return;
+
+        // 最初の初期化（ログ削除など）
+        InitializeLogsAndFiles();
+        
+        // ゲーム開始
+        isGameActive = true;
+        SetPlayerActive(true);
+        ResetStage();
+    }
+
+    private void SetPlayerActive(bool isActive)
+    {
+        if (rend != null) rend.enabled = isActive;
+        if (pInput != null) pInput.enabled = isActive;
+        
+        // 非アクティブ時は物理挙動も止めておく
+        if (!isActive)
+        {
+            rb.isKinematic = true;
+            rb.linearVelocity = UnityEngine.Vector3.zero;
+        }
+    }
+
+    public void OnRestartButton()
+    {
+        // 動作中のコルーチンを全て止める（移動中などを強制キャンセル）
+        StopAllCoroutines();
+
+        // 変数等の完全リセット
+        demoCount = 0;
+        isMoving = false;
+        
+        // ログファイルの全削除（完全な初期状態へ）
+        InitializeLogsAndFiles();
+
+        // 状態をアクティブにしてリセット再開
+        isGameActive = true;
+        SetPlayerActive(true);
+        ResetStage();
+    }
+
+    private void InitializeLogsAndFiles()
+    {
         string deleteLogs = Application.dataPath + "/DemoLogs/";
         string deleteAIs = Application.dataPath + "/DemoAIs/";
+        visitedTiles.Clear();
+
+        // ディレクトリが存在しない場合は作成しておく方が安全
+        if (!Directory.Exists(deleteLogs)) Directory.CreateDirectory(deleteLogs);
+        if (!Directory.Exists(deleteAIs)) Directory.CreateDirectory(deleteAIs);
+
         if (Directory.Exists(deleteLogs))
         {
             foreach (string file in Directory.GetFiles(deleteLogs))
             {
-            File.Delete(file);
+                File.Delete(file);
             }
         }
         if (Directory.Exists(deleteAIs))
         {
             foreach (string file in Directory.GetFiles(deleteAIs))
             {
-            File.Delete(file);
+                File.Delete(file);
             }
         }
-        ResetStage();//ステージをリセット        
     }
 
     private void ResetStage()
     {
+        if(!isGameActive) return;
         transform.position = startPos;
-        rb.linearVelocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
-        transform.rotation = Quaternion.identity;
+        rb.linearVelocity = UnityEngine.Vector3.zero;
+        rb.angularVelocity = UnityEngine.Vector3.zero;
+        transform.rotation = UnityEngine.Quaternion.identity;
         StartCoroutine(startFall());
         demoCount++;
         pMCount = 0;
@@ -71,37 +135,40 @@ public class movP : MonoBehaviour
                 GameController.instance.AllDemosFinished();
             }
             
-            // デモプレイヤー自身を無効化
-            this.gameObject.SetActive(false); 
+            isGameActive = false;
+            SetPlayerActive(false);
             return; // リセット処理を中断
         }
         Plogs.Add("times,nowX,nowY,env,envUp,envDown,envRight,envLeft,action,reward");
-        GetComponent<PlayerInput>().enabled = true;
+        if(pInput != null) pInput.enabled = true;
     }
     IEnumerator startFall()
     {
+        pInput.enabled = false;
         rb.isKinematic = false;
         yield return new WaitForSeconds(1f);
         rb.isKinematic = true;
+        pInput.enabled = true;
     }
 
     private int getEnvType(int x, int z)
     {
-        return stageGenerator.GetTileState(x, z);//2=ゴール,1=ステージあり,0=穴
+        return stageManager.GetTileState(x, z);//2=ゴール,1=ステージあり,0=穴
     }
 
     public void OnMove(InputValue value)
     {
-        transform.position = new Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));
-        Vector2 inputVector = value.Get<Vector2>();
-        if (inputVector != Vector2.zero && !isMoving)
+        if (!isGameActive) return;
+        transform.position = new UnityEngine.Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));
+        UnityEngine.Vector2 inputVector = value.Get<UnityEngine.Vector2>();
+        if (inputVector != UnityEngine.Vector2.zero && !isMoving)
         {
-            Vector3 Muki = new Vector3(Mathf.RoundToInt(inputVector.x), 0, Mathf.RoundToInt(inputVector.y));//.normalized;
-            Vector3 targetPos = transform.position + Muki;
+            UnityEngine.Vector3 Muki = new UnityEngine.Vector3(Mathf.RoundToInt(inputVector.x), 0, Mathf.RoundToInt(inputVector.y));//.normalized;
+            UnityEngine.Vector3 targetPos = transform.position + Muki;
             StartCoroutine(MoveToPos(targetPos));
         }
     }
-    IEnumerator MoveToPos(Vector3 targetPos)
+    IEnumerator MoveToPos(UnityEngine.Vector3 targetPos)
     {
         //log
         int action = 0;
@@ -116,22 +183,25 @@ public class movP : MonoBehaviour
 
         isMoving = true;
         float elapsedTime = 0;
-        Vector3 startPos = transform.position;
+        UnityEngine.Vector3 startPos = transform.position;
 
         while (elapsedTime < 0.2f)
         {
-            transform.position = Vector3.Lerp(startPos, targetPos, elapsedTime / 0.2f);
+            transform.position = UnityEngine.Vector3.Lerp(startPos, targetPos, elapsedTime / 0.2f);
             elapsedTime += Time.deltaTime;
             yield return null;
         }
+
+        transform.position = targetPos;
 
         int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
         int envUp = getEnvType((int)targetPos.x, (int)targetPos.z + 1);
         int envDown = getEnvType((int)targetPos.x, (int)targetPos.z - 1);
         int envRight = getEnvType((int)targetPos.x + 1, (int)targetPos.z);
         int envLeft = getEnvType((int)targetPos.x - 1, (int)targetPos.z);
-        //log
 
+        stageManager.SendMessage("MatsChange",targetPos);
+        //log
 
         if (envValue == 2)//GOAl
         {
@@ -142,8 +212,33 @@ public class movP : MonoBehaviour
         }
         else if (envValue == 1)//stage
         {
-            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
-            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+            Vector2Int tilePos = new Vector2Int((int)targetPos.x, (int)targetPos.z);
+            int rewardSTEP = -1;
+            if(visitedTiles.ContainsKey(tilePos))
+            {
+                visitedTiles[tilePos]++;
+                switch(visitedTiles[tilePos])
+                {
+                    case <= 3:
+                        rewardSTEP = -1;
+                        break;
+                    case 4:
+                        rewardSTEP = -10;
+                        break;
+                    case 5:
+                        rewardSTEP = -50;
+                        break;
+                    default:
+                        rewardSTEP = -100;
+                        break;
+                }
+            }
+            else
+            {
+                visitedTiles[tilePos] = 1;
+            }
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
         }
         else if (envValue == 0)//FALL
         {
@@ -152,10 +247,128 @@ public class movP : MonoBehaviour
             GetComponent<PlayerInput>().enabled = false;
             rb.isKinematic = false;
         }
+        else if (envValue == 3)
+        {
+            StartCoroutine(Trapped());
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+        }
 
-        transform.position = targetPos;
         isMoving = false;
         pMCount++;
+    }
+
+    IEnumerator Trapped()
+    {
+        pInput.enabled = false;
+        // 移動距離をランダムに決定 (2～4マス)
+        int moveDistance = UnityEngine.Random.Range(2, 5);
+
+        // 移動方向をランダムに決定 (上下左右)
+        UnityEngine.Vector3[] directions = {
+            new UnityEngine.Vector3(0, 0, 1),  // 上:1
+            new UnityEngine.Vector3(1, 0, 0),  // 右:2
+            new UnityEngine.Vector3(0, 0, -1),  // 下:3
+            new UnityEngine.Vector3(-1, 0, 0) // 左:4
+        };
+        int action = UnityEngine.Random.Range(0, directions.Length);
+        UnityEngine.Vector3 direction = directions[action];
+        action++;//log用に1増やす
+
+        // 移動先のターゲット位置を計算
+        UnityEngine.Vector3 startPos = transform.position;
+        UnityEngine.Vector3 targetPos = startPos + direction * moveDistance;
+
+        // 放物線の高さを設定
+        float arcHeight = 2.0f;
+
+        // 移動時間
+        float moveDuration = 1.0f;
+        float elapsedTime = 0;
+
+        // 放物線を描きながら移動
+        while (elapsedTime < moveDuration)
+        {
+            elapsedTime += Time.deltaTime;
+            float t = elapsedTime / moveDuration;
+
+            // 線形補間で XZ 平面の位置を計算
+            UnityEngine.Vector3 flatPos = UnityEngine.Vector3.Lerp(startPos, targetPos, t);
+
+            // 放物線の高さを計算
+            float height = Mathf.Sin(t * Mathf.PI) * arcHeight;
+
+            // 新しい位置を設定
+            transform.position = new UnityEngine.Vector3(flatPos.x, startPos.y + height, flatPos.z);
+
+            yield return null;
+        }
+
+        // 最終的な位置をターゲット位置に設定
+        transform.position = targetPos;
+        
+        int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
+        int envUp = getEnvType((int)targetPos.x, (int)targetPos.z + 1);
+        int envDown = getEnvType((int)targetPos.x, (int)targetPos.z - 1);
+        int envRight = getEnvType((int)targetPos.x + 1, (int)targetPos.z);
+        int envLeft = getEnvType((int)targetPos.x - 1, (int)targetPos.z);
+
+        stageManager.SendMessage("MatsChange",targetPos);
+        //log
+
+        if (envValue == 2)//GOAl
+        {
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
+            GetComponent<PlayerInput>().enabled = false;
+            StartCoroutine(GOAL());
+        }
+        else if (envValue == 1)//stage
+        {
+            Vector2Int tilePos = new Vector2Int((int)targetPos.x, (int)targetPos.z);
+            int rewardSTEP = -1;
+            if(visitedTiles.ContainsKey(tilePos))
+            {
+                visitedTiles[tilePos]++;
+                switch(visitedTiles[tilePos])
+                {
+                    case <= 3:
+                        rewardSTEP = -1;
+                        break;
+                    case 4:
+                        rewardSTEP = -10;
+                        break;
+                    case 5:
+                        rewardSTEP = -50;
+                        break;
+                    default:
+                        rewardSTEP = -100;
+                        break;
+                }
+            }
+            else
+            {
+                visitedTiles[tilePos] = 1;
+            }
+            
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
+        }
+        else if (envValue == 0)//FALL
+        {
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
+            GetComponent<PlayerInput>().enabled = false;
+            rb.isKinematic = false;
+        }
+        else if (envValue == 3)
+        {
+            StartCoroutine(Trapped());
+            Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+            Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+        }
+        pMCount++;
+        pInput.enabled = true;
     }
 
     IEnumerator GOAL()
@@ -179,12 +392,5 @@ public class movP : MonoBehaviour
     {
         string path = Application.dataPath + "/DemoLogs/Plog"+demoCount+".csv";
         File.WriteAllLines(path, Plogs);
-        for (int i = 1; i <= 10; i++)
-        {
-            int dCd = demoCount * 100 + i;
-            string additionalPath = Application.dataPath + $"/DemoLogs/Plog"+dCd+".csv";
-            File.WriteAllLines(additionalPath, Plogs);
-        }
-        Debug.Log("Log saved to " + path);
     }
 }

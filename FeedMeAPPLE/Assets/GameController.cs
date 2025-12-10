@@ -3,19 +3,26 @@ using UnityEngine.UI;
 using System.Diagnostics;
 using System.IO; // ファイルI/O (jsonの存在確認) のため
 using System.Collections;
+using System.Diagnostics.Contracts;
 
 public class GameController : MonoBehaviour
 {
     public static GameController instance; // シングルトンパターン
 
     [Header("UI Elements")]
-    public Button trainButton;      // 「学習開始」ボタン
-    public Button simulateButton;   // 「シミュレーション開始」ボタン
-    public Text statusText;         // "学習中..." などを表示するテキスト
+    public Button trainButton;
+    public Button simulateButton;
+    public Button startButton;
+    public Button restartButton;
+    public Text statusText;
 
-    [Header("Game Objects")]
-    public GameObject aiPlayerObject;   // AIPlayer (AIPlayer.cs)
-    public GameObject demoPlayerObject; // デモプレイヤー (movP.cs)
+    public RawImage startGamen;
+    public RawImage clearGamen;
+    public RawImage failGamen;
+
+    public GameObject aiPlayerObject;
+    public GameObject demoPlayerObject;//movP.cs
+    public StageManager stageManager;
 
     [Header("Python Settings")]
     // (Windowsの例) "C:/Users/YourName/AppData/Local/Programs/Python/Python310/python.exe"
@@ -49,13 +56,28 @@ public class GameController : MonoBehaviour
 
         aiPlayerObject.SetActive(false);
         demoPlayerObject.SetActive(true);
+
+        startGamen.gameObject.SetActive(true);
+        clearGamen.gameObject.SetActive(false);
+        failGamen.gameObject.SetActive(false);
+
+        statusText.text = "デモプレイを開始してください。";
+        startButton.gameObject.SetActive(true);
+        restartButton.gameObject.SetActive(false);
     }
 
     /// <summary>
     /// (ステップ1) デモプレイヤー(movP.cs)が10回のデモを終えたら呼び出す
     /// </summary>
     
-    
+    public void OnStartButtonPressed()
+    {
+        startGamen.gameObject.SetActive(false);
+        startButton.gameObject.SetActive(false);
+        statusText.text = "デモプレイ中...";
+        demoPlayerObject.SendMessage("OnStartButton");
+        stageManager.SendMessage("OnStartButton");
+    }    
     public void AllDemosFinished()
     {
         statusText.text = "デモプレイ完了。学習を開始できます。";
@@ -85,7 +107,7 @@ public class GameController : MonoBehaviour
     {
         // Pythonスクリプトのフルパスを取得
         //string scriptFullPath = Path.Combine(Application.dataPath, "..", pythonScriptPath);
-        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainexxx");
+        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainex");
 
         // --- 1. Pythonプロセスを開始 ---
         ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -165,5 +187,39 @@ public class GameController : MonoBehaviour
         // AIプレイヤーのGameObjectをアクティブにする
         // これにより、AIPlayer.cs の Start() が実行され、AIがモデルを読み込み動き出します。
         aiPlayerObject.SetActive(true);
+        aiPlayerObject.SendMessage("Onstart");
+    }
+
+    public void OnAIGoal()
+    {
+        statusText.text = "AIがゴールしました！シミュレーション完了。";
+        clearGamen.gameObject.SetActive(true);
+        aiPlayerObject.SetActive(false);
+        restartButton.gameObject.SetActive(true);
+    }
+    int falseCount = 0;
+    public void OnAIFall()
+    {
+        falseCount++;
+        statusText.text = $"AIが落下しました！やり直し回数: {falseCount}";
+        if(falseCount>=3)
+        {
+            failGamen.gameObject.SetActive(true);
+            restartButton.gameObject.SetActive(true);
+            aiPlayerObject.SetActive(false);
+        }
+    }
+
+    public void OnRestartButtonPressed()
+    {
+        restartButton.gameObject.SetActive(false);
+        clearGamen.gameObject.SetActive(false);
+        failGamen.gameObject.SetActive(false);
+        falseCount = 0;
+
+        aiPlayerObject.SetActive(false);
+        demoPlayerObject.SetActive(true);
+        demoPlayerObject.SendMessage("OnRestartButton");
+        stageManager.SendMessage("OnRestartButton");
     }
 }

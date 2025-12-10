@@ -45,17 +45,22 @@ public class AIController : MonoBehaviour
     public float thinkInterval = 0.25f;
 
     // 再試行制御（同じステップで止まらないように）
-    private int maxStepsPerEpisode = 150;
+    private int maxStepsPerEpisode = 100;
     private int currentStep = 0;
 
-    void Start()
+    //AIマッピング
+    // 推定マップ：穴とゴール
+    private HashSet<Vector2Int> estimatedHoles = new HashSet<Vector2Int>();
+    private Vector2Int? estimatedGoal = null;
+
+
+    private void Onstart()
     {
         stageGenerator = FindFirstObjectByType<StageManager>();
         if (stageGenerator == null) Debug.LogError("StageManager が見つかりません");
 
         rb = GetComponent<Rigidbody>();
         startPos = new Vector3(0, 2, 0);
-
         // JSONファイルのパス
         qTablePath = Path.Combine(Application.dataPath, "DemoAIs", "ai-model_q_table.json");
         ilPolicyPath = Path.Combine(Application.dataPath, "DemoAIs", "ai-model_il_policy.json");
@@ -120,11 +125,51 @@ public class AIController : MonoBehaviour
             Debug.LogWarning("Qテーブルファイルが見つかりません: " + qTablePath);
             qTable = null;
         }
+        // ILポリシーを頻度テーブルに変換
+        ConvertILToFrequency();
+        
+        // ★ q-table から地図推定
+        InferMapFromQTable();
     }
+
+    private void InferMapFromQTable()
+    {
+        estimatedHoles.Clear();
+        estimatedGoal = null;
+
+        foreach (var kv in qTable)
+        {
+            int state = kv.Key;
+            float[] qs = kv.Value;
+
+            // Q値の最大・最小を取得
+            float maxQ = qs.Max();
+            float minQ = qs.Min();
+
+            // 報酬推定
+            // 大きくマイナス → 穴に落ちた状態
+            // 大きくプラス → ゴール状態
+            int x = state / 1000;
+            int y = state % 1000;
+            Vector2Int pos = new Vector2Int(x, y);
+
+            if (minQ < -300f)      // 閾値は適宜調整
+            {
+                estimatedHoles.Add(pos);
+            }
+            else if (maxQ > 300f)
+            {
+                estimatedGoal = pos;
+            }
+        }
+
+        Debug.Log($"推定穴={estimatedHoles.Count}, 推定ゴール={estimatedGoal}");
+    }
+
 
     private void ResetToStart()
     {
-        transform.position = startPos;
+        transform.position = startPos + new Vector3(UnityEngine.Random.Range(-2, 4), 0, 0);
         rb.linearVelocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
         transform.rotation = Quaternion.identity;
@@ -149,11 +194,10 @@ public class AIController : MonoBehaviour
                 Debug.LogWarning("AI: 最大行動回数を超えました。穴に落ちたとみなします。");
                 env = 0; // 穴に落ちたとみなす
             }
-            currentStep++;
             // 行動回数が100を超えたら、150に向けて大きさを小さくしていく
-            if (currentStep > 100 && currentStep <= 150)
+            if (currentStep > 50 && currentStep <= 100)
             {
-                float scaleFactor = Mathf.Lerp(1.0f, 0.0f, (currentStep - 100) / 50.0f);
+                float scaleFactor = Mathf.Lerp(1.0f, 0.0f, (currentStep - 50) / 50.0f);
                 transform.localScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
             }
 
@@ -162,6 +206,8 @@ public class AIController : MonoBehaviour
                 Debug.Log("AI: GOAL に到達しました");
                 // エピソード終了処理: リセットして再開
                 yield return new WaitForSeconds(1.5f);
+                //シミュ完了の合図をGameControllerに送る
+                GameController.instance.SendMessage("OnAIGoal");
                 ResetToStart();
                 yield return new WaitForSeconds(0.5f);
                 continue;
@@ -170,6 +216,8 @@ public class AIController : MonoBehaviour
             {
                 Debug.Log("AI: 落下しました");
                 yield return new WaitForSeconds(1.5f);
+                //シミュ完了の合図をGameControllerに送る
+                GameController.instance.SendMessage("OnAIFall");
                 ResetToStart();
                 yield return new WaitForSeconds(0.5f);
                 continue;
@@ -184,93 +232,179 @@ public class AIController : MonoBehaviour
                                                 transform.position.y,
                                                 Mathf.Round(transform.position.z) + moveDir.z);
                 StartCoroutine(MoveToPosByAI(targetPos, chosenAction));
+                currentStep++;
             }
 
             yield return new WaitForSeconds(thinkInterval);
         }
     }
 
-    private string BuildStateKey(int x, int y)
+
+    // IL 70% / Q 30% の重み
+    private const float IL_WEIGHT = 0.3f;
+
+    // IL 集計版（ロード時に変換）
+    private Dictionary<string, Dictionary<int, int>> ilPolicyFreq = null;
+
+
+    // LoadModels() の最後に追加する初期化処理
+    private void ConvertILToFrequency()
     {
-        // 現在地
-        int env = getEnvType(x, y);
-
-        // Python側: env, up, down, right, left
-        // 行動定義: 1=上(y+1), 2=右(x+1), 3=下(y-1), 4=左(x-1)
-        // 注意: Pythonのy座標は Unityのz座標に対応させている前提です
-        
-        int up    = getEnvType(x, y + 1); // Unityでは z+1
-        int right = getEnvType(x + 1, y); // Unityでは x+1
-        int down  = getEnvType(x, y - 1); // Unityでは z-1
-        int left  = getEnvType(x - 1, y); // Unityでは x-1
-
-        // Pythonの str(tuple) 形式に合わせる: "(x, y, env, up, down, right, left)"
-        // スペースの有無に注意。Pythonの標準的な tuple 文字列化は "(1, 2, ...)" のようにカンマ後にスペースが入ります。
-        // JSONのキーを確認してスペースの有無を調整してください。
-        // ここでは Pythonの `str((...))` の標準挙動に合わせてスペースを入れています。
-        return $"({x}, {y}, {env}, {up}, {down}, {right}, {left})";
-    }
-
-    // 現在の状態に対する行動選択
-    private int DecideActionForCurrentState()
-    {
-        // 座標の取得 (UnityのZをPythonのYとして扱う)
-        int px = (int)Mathf.Round(transform.position.x);
-        int py = (int)Mathf.Round(transform.position.z);
-
-        // キーの生成
-        string stateKey = BuildStateKey(px, py);
-        
-        // --- 以下、辞書検索ロジック ---
-
-        // 1) ILポリシー
-        if (ilPolicy != null && ilPolicy.ContainsKey(stateKey))
+        if (ilPolicy == null)
         {
-            return ilPolicy[stateKey];
+            ilPolicyFreq = null;
+            return;
         }
 
-        // 2) Qテーブル
-        if (qTable != null && qTable.ContainsKey(stateKey))
+        ilPolicyFreq = new Dictionary<string, Dictionary<int, int>>();
+
+        foreach (var kv in ilPolicy)
+        {
+            string key = kv.Key;
+            int act = kv.Value;
+
+            if (!ilPolicyFreq.ContainsKey(key))
+                ilPolicyFreq[key] = new Dictionary<int, int>();
+
+            if (!ilPolicyFreq[key].ContainsKey(act))
+                ilPolicyFreq[key][act] = 0;
+
+            ilPolicyFreq[key][act] += 1;
+        }
+
+        Debug.Log($"ILポリシーを頻度テーブルに変換しました: {ilPolicyFreq.Count} 状態");
+    }
+
+
+
+    private int DecideActionForCurrentState()
+    {
+        int px = (int)Mathf.Round(transform.position.x);
+        int py = (int)Mathf.Round(transform.position.z);
+        string stateKey = BuildStateKey(px, py);
+
+        bool hasIL = ilPolicyFreq != null && ilPolicyFreq.ContainsKey(stateKey);
+        // Qテーブルのエントリがあるか確認
+        bool hasQ = qTable != null && qTable.ContainsKey(stateKey);
+
+        // ★修正: ILとQの併用ロジックの整理
+        // ランダム値でILを使うか決定
+        bool useIL = UnityEngine.Random.value < IL_WEIGHT;
+
+        // 1. ILを使うモードで、かつILデータがある場合
+        if (useIL && hasIL)
+        {
+            var table = ilPolicyFreq[stateKey];
+            int bestAction = 1;
+            int bestCount = -1;
+            foreach (var kv in table)
+            {
+                if (kv.Value > bestCount)
+                {
+                    bestCount = kv.Value;
+                    bestAction = kv.Key;
+                }
+            }
+            return bestAction;
+        }
+
+        // 2. Qテーブルを使って最善の手を選ぶ (Greedy)
+        if (hasQ)
         {
             List<float> qrow = qTable[stateKey];
-            // Python側: index 0 is unused, 1..4 represent actions
+            
+            // アクション 1~4 の中で最大値を持つインデックスを探す
+            // (qrow[0]は未使用なので無視)
             if (qrow != null && qrow.Count >= ACTION_SPACE + 1)
             {
-                int bestAction = 1;
-                float bestVal = qrow[1];
-                // argmax logic...
-                for (int a = 2; a <= ACTION_SPACE; a++)
+                float maxQ = -999999f;
+                int bestAction = UnityEngine.Random.Range(1, ACTION_SPACE + 1);
+                
+                // 単純に現在のQ値が最も高い行動を選ぶ
+                for (int a = 1; a <= ACTION_SPACE; a++)
                 {
-                    if (qrow[a] > bestVal)
+                    if (qrow[a] > maxQ)
                     {
-                        bestVal = qrow[a];
+                        maxQ = qrow[a];
                         bestAction = a;
                     }
                 }
-                // 値が全て0でなければ採用
-                bool anyNonZero = false;
-                for(int i=1; i<=ACTION_SPACE; i++) if(Mathf.Abs(qrow[i]) > 1e-6f) anyNonZero = true;
                 
-                if (anyNonZero) return bestAction;
+                // すべて0（未学習）でないか確認。すべて0ならランダムにするか、そのまま返すか
+                // ここではmaxQが初期値より更新されていれば採用
+                if (maxQ > -99999f)
+                {
+                    return bestAction;
+                }
             }
         }
 
-        // 3) フォールバック（単純なヒューリスティック or ランダム）
-        // まずは安全行動（上、右、下、左の順）を試す（到達可能性を見てから選ぶ）
-        // 簡易チェック: 各候補に対して穴でなければ選ぶ
-        int[] order = new int[] { 1, 2, 3, 4 };
-        foreach (int a in order)
+        // ★ 穴回避とゴール誘導 ------------
+
+        int ppx = (int)Mathf.Round(transform.position.x);
+        int ppy = (int)Mathf.Round(transform.position.z);
+            Vector2Int now = new Vector2Int(ppx, ppy);
+
+            // 次の行動で向かう座標
+            Dictionary<int, Vector2Int> nextPos = new Dictionary<int, Vector2Int>() {
+                {1, now + new Vector2Int(0, 1)},   // 上
+                {2, now + new Vector2Int(1, 0)},   // 右
+                {3, now + new Vector2Int(0, -1)},  // 下
+                {4, now + new Vector2Int(-1, 0)},  // 左
+            };
+
+        // 1. 穴方向は候補から外す
+        List<int> safeActions = new List<int>();
+        foreach (var kv in nextPos)
         {
-            Vector3 dir = ActionToVector(a);
-            int nx = (int)Mathf.Round(transform.position.x + dir.x);
-            int nz = (int)Mathf.Round(transform.position.z + dir.z);
-            int e = getEnvType(nx, nz);
-            if (e != 0) return a; // 穴でない方向を優先
+            if (!estimatedHoles.Contains(kv.Value))safeActions.Add(kv.Key);
         }
 
-        // 最終的にランダム
-        return UnityEngine.Random.Range(1, ACTION_SPACE + 1);
+        // すべて穴方向 → ランダム
+        if (safeActions.Count == 0)
+            return UnityEngine.Random.Range(1, 5);
+        // 2. ゴールが推定できている → もっとも距離が近づく行動を採用
+        if (estimatedGoal.HasValue)
+        {
+            int best = safeActions[0];
+            float bestDist = float.MaxValue;
+
+            foreach (int a in safeActions)
+            {
+                float d = Vector2.Distance(nextPos[a], estimatedGoal.Value);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = a;
+                }
+            }
+
+            Debug.Log($"fallback → goal direction: {best}");
+            return best;
+        }
+
+        // 3. ゴール不明でも穴回避した上でランダム
+        return safeActions[UnityEngine.Random.Range(0, safeActions.Count)];
+
+        
     }
+
+    // ------------------------------------------
+    // BuildStateKey の確認（スペースに注意）
+    // ------------------------------------------
+    private string BuildStateKey(int x, int y)
+    {
+        int env = getEnvType(x, y);
+        int up    = getEnvType(x, y + 1);
+        int right = getEnvType(x + 1, y);
+        int down  = getEnvType(x, y - 1);
+        int left  = getEnvType(x - 1, y);
+
+        // Python側: f"({x}, {y}, {env}, {up}, {down}, {right}, {left})"
+        // カンマの後に半角スペースを入れるフォーマットで統一します。
+        return $"({x}, {y}, {env}, {up}, {down}, {right}, {left})";
+    }
+
 
     // 行動番号 -> ベクトル
     // 1=up(z+1), 2=right(x+1), 3=down(z-1), 4=left(x-1)
@@ -292,7 +426,11 @@ public class AIController : MonoBehaviour
         isMoving = true;
         float elapsedTime = 0;
         Vector3 from = transform.position;
-        float duration = 0.2f;
+        float duration = 0.25f;
+        if(currentStep > 50)
+        {
+            duration = 0.2f;
+        }
 
         while (elapsedTime < duration)
         {
@@ -304,7 +442,7 @@ public class AIController : MonoBehaviour
         // 到達
         transform.position = targetPos;
         int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
-        // デバッグログ（必要に応じて調整）
+        
         Debug.Log($"AI Move: pos=({targetPos.x},{targetPos.z}) env={envValue} action={action}");
 
         if (envValue == 2)
@@ -332,8 +470,8 @@ public class AIController : MonoBehaviour
 
     private int get_state_index(int x, int y, int env)
     {
-        if (x < 0 || y < 0 || x >= MAX_X || y >= MAX_Y || (env < 0 || env > 2)) return -1;
-        return x * (MAX_Y * ENV_TYPES) + y * ENV_TYPES + env;
+        if (x < 0 || y < 0 || x >= MAX_X || y >= MAX_Y || env < 0 || env > 2) return -1;
+        return x * MAX_Y * ENV_TYPES + y * ENV_TYPES + env;
     }
 
     // (デバッグ用) キーボードで強制リセット

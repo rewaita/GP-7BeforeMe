@@ -35,6 +35,12 @@ def build_state_key(x, y, env, up, down, right, left):
     """
     return (int(x), int(y), int(env), int(up), int(down), int(right), int(left))
 
+def encode_state(x, y, env, up, down, right, left):
+    # 状態を丸ごとタプル化してハッシュ化
+    tup = (x, y, env, up, down, right, left)
+    return hash(tup) & 0xffffffff   # 32bitに落とす
+
+
 
 # ===========================================================
 # 3. CSVログ読み込み

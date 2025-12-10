@@ -1,0 +1,4 @@
+times,nowX,nowY,env,envUp,envDown,envRight,envLeft,action,reward
+0,0,1,1,1,1,1,1,1,-1
+1,0,2,1,9,1,1,9,1,-1
+8,1,8,0,1,9,9,0,1,-500
