@@ -108,6 +108,7 @@ public class StageManager : MonoBehaviour
 
         // 3. 「絶対に通行可能な正解ルート」を確保する (保護フラグ 9 を立てる)
         CreateGuaranteedPath(width, depth);
+        CreateGuaranteedPath(width, depth);// 2回呼び出して道を複雑化
 
         // 4. ランダムに穴を掘る（複雑な形状＆行き止まり作成）
         CarveComplexHoles(width, depth);
