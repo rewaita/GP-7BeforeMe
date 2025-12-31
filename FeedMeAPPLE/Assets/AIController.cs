@@ -604,6 +604,20 @@ public class AIController : MonoBehaviour
         Vector3 from = transform.position;
         float duration = currentStep > 50 ? 0.2f : 0.25f;
 
+        int rotate = 0;
+        switch (action)
+        {
+            case 1: rotate = 0;     // 上
+                break;
+            case 2: rotate = 90;    // 右
+                break;
+            case 3: rotate = 180;   // 下
+                break;
+            case 4: rotate = -90;   // 左
+                break;
+        }
+        transform.rotation = Quaternion.Euler(0, rotate, 0);
+
         while (elapsedTime < duration)
         {
             transform.position = Vector3.Lerp(from, targetPos, elapsedTime / duration);
@@ -624,8 +638,80 @@ public class AIController : MonoBehaviour
         {
             rb.isKinematic = false;
         }
+        else if (envValue == 3)
+        {
+            StartCoroutine(HandleTrapTile(targetPos));
+        }
 
         isMoving = false;
+    }
+
+    private IEnumerator HandleTrapTile(Vector3 trapPos)
+    {
+        // 移動距離をランダムに決定 (2～4マス)
+        int moveDistance = UnityEngine.Random.Range(2, 5);
+
+        // 移動方向をランダムに決定 (上下左右)
+        Vector3[] directions = {
+            new Vector3(0, 0, 1),   // 上:1
+            new Vector3(1, 0, 0),   // 右:2
+            new Vector3(0, 0, -1),  // 下:3
+            new Vector3(-1, 0, 0)   // 左:4
+        };
+        int dirIndex = UnityEngine.Random.Range(0, directions.Length);
+        Vector3 direction = directions[dirIndex];
+        int trapAction = dirIndex + 1; // log用に1増やす
+
+        // 移動先のターゲット位置を計算
+        Vector3 startPos = transform.position;
+        Vector3 targetPos = startPos + direction * moveDistance;
+
+        // 放物線の高さを設定
+        float arcHeight = 2.0f;
+
+        // 移動時間
+        float moveDuration = 1.0f;
+        float elapsedTime = 0;
+
+        // 放物線を描きながら移動
+        while (elapsedTime < moveDuration)
+        {
+            elapsedTime += Time.deltaTime;
+            float t = elapsedTime / moveDuration;
+
+            // 線形補間で XZ 平面の位置を計算
+            Vector3 flatPos = Vector3.Lerp(startPos, targetPos, t);
+
+            // 放物線の高さを計算
+            float height = Mathf.Sin(t * Mathf.PI) * arcHeight;
+
+            // 新しい位置を設定
+            transform.position = new Vector3(flatPos.x, startPos.y + height, flatPos.z);
+
+            yield return null;
+        }
+
+        // 最終的な位置をターゲット位置に設定
+        transform.position = targetPos;
+
+        int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
+
+        Debug.Log($"AI Trap: pos=({targetPos.x},{targetPos.z}) env={envValue} action={trapAction}");
+
+        if (envValue == 2)
+        {
+            Debug.Log("AI: ゴール到達！");
+        }
+        else if (envValue == 0)
+        {
+            Debug.Log("AI: 落下しました");
+            rb.isKinematic = false;
+        }
+        else if (envValue == 3)
+        {
+            // さらに罠マスに踏み込んだ場合は再度実行
+            yield return StartCoroutine(HandleTrapTile(targetPos));
+        }
     }
 
     /// <summary>

@@ -23,6 +23,7 @@ public class GameController : MonoBehaviour
     public GameObject aiPlayerObject;
     public GameObject demoPlayerObject;//movP.cs
     public StageManager stageManager;
+    public kao kao;
 
     [Header("Python Settings")]
     // (Windowsの例) "C:/Users/YourName/AppData/Local/Programs/Python/Python310/python.exe"
@@ -77,12 +78,15 @@ public class GameController : MonoBehaviour
         statusText.text = "デモプレイ中...";
         demoPlayerObject.SendMessage("OnStartButton");
         stageManager.SendMessage("OnStartButton");
+        kao.SendMessage("OnStart");
     }    
     public void AllDemosFinished()
     {
         statusText.text = "デモプレイ完了。学習を開始できます。";
+        kao.SendMessage("OnStop");
         trainButton.gameObject.SetActive(true); // 学習ボタンを表示
         demoPlayerObject.SetActive(false);    // デモプレイヤーを非表示
+        
     }
 
     /// <summary>
@@ -212,6 +216,7 @@ public class GameController : MonoBehaviour
 
     public void OnRestartButtonPressed()
     {
+        
         restartButton.gameObject.SetActive(false);
         clearGamen.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
@@ -221,5 +226,6 @@ public class GameController : MonoBehaviour
         demoPlayerObject.SetActive(true);
         demoPlayerObject.SendMessage("OnRestartButton");
         stageManager.SendMessage("OnRestartButton");
+        kao.SendMessage("OnStart");
     }
 }

@@ -9,13 +9,13 @@ public class moveCamera : MonoBehaviour
         if (Pl.activeSelf)
         {
             Vector3 PlPosition = Pl.transform.position;
-            transform.position = new Vector3(PlPosition.x, PlPosition.y + 40, PlPosition.z);
+            transform.position = new Vector3(PlPosition.x, PlPosition.y + 20, PlPosition.z-3);
             transform.LookAt(Pl.transform);
         }
         else if (AIpl.activeSelf)
         {
             Vector3 AIplPosition = AIpl.transform.position;
-            transform.position = new Vector3(AIplPosition.x, AIplPosition.y + 40, AIplPosition.z);
+            transform.position = new Vector3(AIplPosition.x, AIplPosition.y + 20, AIplPosition.z-3);
             transform.LookAt(AIpl.transform);
         }
     }

@@ -5,7 +5,7 @@ using System;
 
 public class StageManager : MonoBehaviour
 {
-    public GameObject blockPrefab; // 1x1x1 のブロック
+    public GameObject blockPrefab; //cube,line1,line2を含む
     public GameObject goalBlock;
     public GameObject tekiBlock;
 
@@ -408,34 +408,50 @@ public class StageManager : MonoBehaviour
 
         // 現在のブロックを取得
         GameObject block = copiedBlocks[xi, zi, currentN];
-        Renderer blockRenderer = block.GetComponent<Renderer>();
+        Transform cubeT = block.transform.Find("cube");
+        Transform line1T = block.transform.Find("line1");
+        Transform line2T = block.transform.Find("line2");
 
-        if (blockRenderer != null)
+        if (cubeT != null)
         {
             //Debug.Log($"Changing material at ({xi},{zi}) with n={currentN}");
             // n に応じてマテリアルを変更
             switch (currentN)
             {
                 case 0:
-                    blockRenderer.material = floor1;
+                    cubeT.GetComponent<Renderer>().material = floor1;
+                    line1T.GetComponent<Renderer>().material = floor4;
+                    line2T.GetComponent<Renderer>().material = floor4;
                     break;
                 case 1:
-                    blockRenderer.material = floor1;
+                    cubeT.GetComponent<Renderer>().material = floor1;
+                    line1T.GetComponent<Renderer>().material = floor4;
+                    line2T.GetComponent<Renderer>().material = floor4;
                     break;
                 case 2:
-                    blockRenderer.material = floor2;
+                    cubeT.GetComponent<Renderer>().material = floor2;
+                    line1T.GetComponent<Renderer>().material = floor5;
+                    line2T.GetComponent<Renderer>().material = floor5;
                     break;
                 case 3:
-                    blockRenderer.material = floor3;
+                    cubeT.GetComponent<Renderer>().material = floor3;
+                    line1T.GetComponent<Renderer>().material = floor6;
+                    line2T.GetComponent<Renderer>().material = floor6;
                     break;
                 case 4:
-                    blockRenderer.material = floor4;
+                    cubeT.GetComponent<Renderer>().material = floor4;
+                    line1T.GetComponent<Renderer>().material = floor3;
+                    line2T.GetComponent<Renderer>().material = floor3;
                     break;
                 case 5:
-                    blockRenderer.material = floor5;
+                    cubeT.GetComponent<Renderer>().material = floor5;
+                    line1T.GetComponent<Renderer>().material = floor2;
+                    line2T.GetComponent<Renderer>().material = floor2;
                     break;
                 case 6:
-                    blockRenderer.material = floor6;
+                    cubeT.GetComponent<Renderer>().material = floor6;
+                    line1T.GetComponent<Renderer>().material = floor1;
+                    line2T.GetComponent<Renderer>().material = floor1;
                     break;
                 default:
                     Debug.LogWarning($"n の値が範囲外です: {currentN}");

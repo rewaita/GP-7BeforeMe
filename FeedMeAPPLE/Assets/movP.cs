@@ -172,18 +172,34 @@ public class movP : MonoBehaviour
     {
         //log
         int action = 0;
+        int rotate = 0;
         float nowPosX = transform.position.x;
         float nowPosZ = transform.position.z;
         float actionX = targetPos.x - nowPosX;
         float actionZ = targetPos.z - nowPosZ;
-        if (actionX > 0) action = 2;//right
-        else if (actionX < 0) action = 4;//left
-        else if (actionZ > 0) action = 1;//up
-        else if (actionZ < 0) action = 3;//down
+        if (actionX > 0){
+            action=2;//right
+            rotate = 90;
+        }
+        else if (actionX < 0){
+            action = 4;//left
+            rotate = -90;
+        }
+        else if (actionZ > 0){
+            action = 1;//up
+            rotate = 0;
+        }
+        else if (actionZ < 0){
+            action = 3;//down
+            rotate = 180;
+        }
+
 
         isMoving = true;
         float elapsedTime = 0;
         UnityEngine.Vector3 startPos = transform.position;
+        
+        transform.rotation = UnityEngine.Quaternion.Euler(0, rotate, 0);
 
         while (elapsedTime < 0.2f)
         {
