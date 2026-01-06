@@ -3,69 +3,68 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
-using UnityEngine.InputSystem;
+using UnityEngine.UI;
 using Newtonsoft.Json;
 using System.Linq;
 
-/// <summary>
-/// 改良版AIコントローラー
-/// - 学習済みモデルから2Dマップを構築
-/// - マップ情報を活用した賢い推論
-/// - Q-Table → IL-Policy の順で行動決定
-/// </summary>
 public class AIController : MonoBehaviour
 {
     // ステージ参照
-    private StageManager stageGenerator;
+    private StageManager stageManager;
     private Rigidbody rb;
 
     // 移動制御
     private bool isMoving = false;
     private Vector3 startPos;
 
-    // 学習モデルファイルパス
-    private string qTablePath;
-    private string ilPolicyPath;
-
     // 学習モデル
-    private Dictionary<string, List<float>> qTable = null;
-    private Dictionary<string, int> ilPolicy = null;
+    private Dictionary<string, Dictionary<string, int>> bcPolicy = null;  // BC Policy（確率分布）
+    private Dictionary<string, RewardStats> rewardGradient = null;        // 報酬勾配テーブル
+    private Dictionary<string, int> goalPositions = null;                 // ゴール座標（頻度付き）
 
-    // 2Dマップ（-1=不明, 0=穴, 1=ステージ, 2=ゴール, 3=トラップ）
-    private Dictionary<Vector2Int, int> knownMap = new Dictionary<Vector2Int, int>();
-    private Vector2Int? goalPosition = null;
-
-    // 定数
-    private const int ACTION_SPACE = 4; // actions 1..4
-
-    // 公開設定
+    // AI設定
     [Tooltip("思考間隔（秒）")]
-    public float thinkInterval = 0.25f;
+    public float thinkInterval = 0.3f;
 
-    // 再試行制御
-    private int maxStepsPerEpisode = 100;
+    [Tooltip("BC Policy サンプリング温度（1.0=標準, 低いほど頻出行動を選びやすい）")]
+    public float temperature = 1.0f;
+
+    // 試行制御
     private int currentStep = 0;
+    private int maxStepsPerEpisode = 150;
+    private int attemptCount = 0;
+    private int maxAttempts = 3;
 
-    /// <summary>
-    /// GameControllerから呼び出される開始メソッド
-    /// </summary>
+    // 思考プロセス可視化用（GameControllerから設定）
+    [HideInInspector]
+    public Text thinkingText;
+    private string currentThinkingInfo = "";
+
+    // 報酬統計用の構造体
+    [Serializable]
+    public class RewardStats
+    {
+        public float avg;
+        public float max;
+        public float min;
+        public int count;
+    }
+
     public void Onstart()
     {
-        stageGenerator = FindFirstObjectByType<StageManager>();
-        if (stageGenerator == null) Debug.LogError("StageManager が見つかりません");
+        stageManager = FindFirstObjectByType<StageManager>();
+        if (stageManager == null)
+        {
+            Debug.LogError("StageManager が見つかりません");
+            return;
+        }
 
         rb = GetComponent<Rigidbody>();
         startPos = new Vector3(0, 2, 0);
-
-        // JSONファイルのパス設定
-        qTablePath = Path.Combine(Application.dataPath, "DemoAIs", "ai-model_q_table.json");
-        ilPolicyPath = Path.Combine(Application.dataPath, "DemoAIs", "ai-model_il_policy.json");
+        attemptCount = 0;
 
         // モデル読み込み
         LoadModels();
-
-        // 2Dマップ構築
-        BuildKnownMapFromModels();
 
         // 自律プレイ開始
         StartCoroutine(StartEpisodeAfterDelay(0.5f));
@@ -79,211 +78,73 @@ public class AIController : MonoBehaviour
     }
 
     /// <summary>
-    /// モデルファイルの読み込み
+    /// 学習済みモデルの読み込み
     /// </summary>
     private void LoadModels()
     {
-        // IL policy
-        if (File.Exists(ilPolicyPath))
+        string aiDir = Path.Combine(Application.dataPath, "DemoAIs");
+
+        // BC Policy読み込み
+        string bcPath = Path.Combine(aiDir, "bc_policy.json");
+        if (File.Exists(bcPath))
         {
             try
             {
-                string ilJson = File.ReadAllText(ilPolicyPath);
-                ilPolicy = JsonConvert.DeserializeObject<Dictionary<string, int>>(ilJson);
-                Debug.Log($"ILポリシーを読み込みました（{ilPolicy.Count}件）: {ilPolicyPath}");
+                string json = File.ReadAllText(bcPath);
+                bcPolicy = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, int>>>(json);
+                Debug.Log($"BC Policy読み込み成功: {bcPolicy.Count} 状態");
             }
             catch (Exception e)
             {
-                Debug.LogWarning("ILポリシーの読み込みに失敗しました: " + e.Message);
-                ilPolicy = null;
+                Debug.LogWarning($"BC Policy読み込みエラー: {e.Message}");
+                bcPolicy = null;
             }
         }
         else
         {
-            Debug.LogWarning("ILポリシーファイルが見つかりません: " + ilPolicyPath);
-            ilPolicy = null;
+            Debug.LogWarning($"BC Policyファイルが見つかりません: {bcPath}");
         }
 
-        // Q-table
-        if (File.Exists(qTablePath))
+        // 報酬勾配テーブル読み込み
+        string rgPath = Path.Combine(aiDir, "reward_gradient.json");
+        if (File.Exists(rgPath))
         {
             try
             {
-                string qJson = File.ReadAllText(qTablePath);
-                qTable = JsonConvert.DeserializeObject<Dictionary<string, List<float>>>(qJson);
-                Debug.Log($"Qテーブルを読み込みました（状態数: {qTable.Count}）: {qTablePath}");
+                string json = File.ReadAllText(rgPath);
+                rewardGradient = JsonConvert.DeserializeObject<Dictionary<string, RewardStats>>(json);
+                Debug.Log($"報酬勾配テーブル読み込み成功: {rewardGradient.Count} 状態");
             }
             catch (Exception e)
             {
-                Debug.LogWarning("Qテーブルの読み込みに失敗しました: " + e.Message);
-                qTable = null;
+                Debug.LogWarning($"報酬勾配テーブル読み込みエラー: {e.Message}");
+                rewardGradient = null;
             }
         }
         else
         {
-            Debug.LogWarning("Qテーブルファイルが見つかりません: " + qTablePath);
-            qTable = null;
+            Debug.LogWarning($"報酬勾配テーブルファイルが見つかりません: {rgPath}");
         }
-    }
 
-    /// <summary>
-    /// Q-TableとIL-Policyから2Dマップを構築
-    /// </summary>
-    private void BuildKnownMapFromModels()
-    {
-        knownMap.Clear();
-        goalPosition = null;
-
-        Debug.Log("=== 2Dマップ構築開始 ===");
-
-        // 1. IL-Policyから環境情報を抽出
-        if (ilPolicy != null)
+        // ゴール座標読み込み
+        string gpPath = Path.Combine(aiDir, "goal_positions.json");
+        if (File.Exists(gpPath))
         {
-            foreach (var kv in ilPolicy)
+            try
             {
-                ParseStateKeyAndUpdateMap(kv.Key);
+                string json = File.ReadAllText(gpPath);
+                goalPositions = JsonConvert.DeserializeObject<Dictionary<string, int>>(json);
+                Debug.Log($"ゴール座標読み込み成功: {goalPositions.Count} 箇所");
             }
-        }
-
-        // 2. Q-Tableから環境情報を抽出（追加情報として）
-        if (qTable != null)
-        {
-            foreach (var kv in qTable)
+            catch (Exception e)
             {
-                ParseStateKeyAndUpdateMap(kv.Key);
+                Debug.LogWarning($"ゴール座標読み込みエラー: {e.Message}");
+                goalPositions = null;
             }
-        }
-
-        // 3. ゴール位置の特定（最も報酬が高い位置）
-        FindGoalPosition();
-
-        Debug.Log($"2Dマップ構築完了: {knownMap.Count}タイル判明");
-        Debug.Log($"ゴール位置: {(goalPosition.HasValue ? goalPosition.Value.ToString() : "不明")}");
-        Debug.Log($"穴の数: {knownMap.Count(kv => kv.Value == 0)}");
-        Debug.Log($"ステージの数: {knownMap.Count(kv => kv.Value == 1)}");
-        Debug.Log($"トラップの数: {knownMap.Count(kv => kv.Value == 3)}");
-    }
-
-    /// <summary>
-    /// 状態キーをパースして2Dマップを更新
-    /// 状態キー形式: "(x, y, env, up, down, right, left)"
-    /// </summary>
-    private void ParseStateKeyAndUpdateMap(string stateKey)
-    {
-        try
-        {
-            string inner = stateKey.Trim();
-            if (inner.StartsWith("(")) inner = inner.Substring(1);
-            if (inner.EndsWith(")")) inner = inner.Substring(0, inner.Length - 1);
-
-            var parts = inner.Split(',');
-            if (parts.Length < 7) return;
-
-            int x = int.Parse(parts[0].Trim());
-            int y = int.Parse(parts[1].Trim());
-            int env = int.Parse(parts[2].Trim());
-            int up = int.Parse(parts[3].Trim());
-            int down = int.Parse(parts[4].Trim());
-            int right = int.Parse(parts[5].Trim());
-            int left = int.Parse(parts[6].Trim());
-
-            // 現在位置の環境を記録
-            Vector2Int currentPos = new Vector2Int(x, y);
-            UpdateMapTile(currentPos, env);
-
-            // 上下左右の環境情報も記録
-            UpdateMapTile(new Vector2Int(x, y + 1), up);      // 上
-            UpdateMapTile(new Vector2Int(x, y - 1), down);    // 下
-            UpdateMapTile(new Vector2Int(x + 1, y), right);   // 右
-            UpdateMapTile(new Vector2Int(x - 1, y), left);    // 左
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning($"状態キーのパースに失敗: '{stateKey}' -> {e.Message}");
-        }
-    }
-
-    /// <summary>
-    /// マップタイルの情報を更新（既存情報より優先度が高い場合のみ）
-    /// </summary>
-    private void UpdateMapTile(Vector2Int pos, int envValue)
-    {
-        // 優先度: ゴール(2) > トラップ(3) > ステージ(1) > 穴(0)
-        if (!knownMap.ContainsKey(pos))
-        {
-            knownMap[pos] = envValue;
         }
         else
         {
-            int current = knownMap[pos];
-            // ゴールは最優先
-            if (envValue == 2)
-            {
-                knownMap[pos] = 2;
-            }
-            // トラップは穴・ステージより優先
-            else if (envValue == 3 && current != 2)
-            {
-                knownMap[pos] = 3;
-            }
-            // ステージは穴より優先（穴の情報は不確実な場合がある）
-            else if (envValue == 1 && current == 0)
-            {
-                knownMap[pos] = 1;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Q-Tableからゴール位置を特定
-    /// </summary>
-    private void FindGoalPosition()
-    {
-        if (qTable == null) return;
-
-        float bestGoalScore = float.NegativeInfinity;
-        Vector2Int bestPos = Vector2Int.zero;
-        bool foundGoal = false;
-
-        foreach (var kv in qTable)
-        {
-            string stateKey = kv.Key;
-            List<float> qrow = kv.Value;
-
-            if (qrow == null || qrow.Count < ACTION_SPACE + 1) continue;
-
-            // 最大Q値を取得
-            float maxQ = qrow.Skip(1).Take(ACTION_SPACE).Max();
-
-            // ゴール報酬の閾値（300以上）
-            if (maxQ > 300f && maxQ > bestGoalScore)
-            {
-                try
-                {
-                    string inner = stateKey.Trim();
-                    if (inner.StartsWith("(")) inner = inner.Substring(1);
-                    if (inner.EndsWith(")")) inner = inner.Substring(0, inner.Length - 1);
-
-                    var parts = inner.Split(',');
-                    if (parts.Length >= 2)
-                    {
-                        int x = int.Parse(parts[0].Trim());
-                        int y = int.Parse(parts[1].Trim());
-
-                        bestGoalScore = maxQ;
-                        bestPos = new Vector2Int(x, y);
-                        foundGoal = true;
-                    }
-                }
-                catch { }
-            }
-        }
-
-        if (foundGoal)
-        {
-            goalPosition = bestPos;
-            // ゴール位置を確実にマップに記録
-            knownMap[bestPos] = 2;
+            Debug.LogWarning($"ゴール座標ファイルが見つかりません: {gpPath}");
         }
     }
 
@@ -292,7 +153,9 @@ public class AIController : MonoBehaviour
     /// </summary>
     private void ResetToStart()
     {
-        transform.position = startPos + new Vector3(UnityEngine.Random.Range(-2, 4), 0, 0);
+        // ランダムなX位置でスタート（-4 ~ 4の範囲）
+        float randomX = UnityEngine.Random.Range(-4f, 4f);
+        transform.position = startPos + new Vector3(randomX, 0, 0);
         rb.linearVelocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
         transform.rotation = Quaternion.identity;
@@ -300,6 +163,9 @@ public class AIController : MonoBehaviour
         rb.isKinematic = true;
         isMoving = false;
         currentStep = 0;
+        attemptCount++;
+
+        UpdateThinkingUI($"=== 試行 {attemptCount}/{maxAttempts} 開始 ===\nスタート位置: ({transform.position.x:F1}, {transform.position.z:F1})");
     }
 
     /// <summary>
@@ -310,53 +176,65 @@ public class AIController : MonoBehaviour
         while (true)
         {
             Vector3 pos = new Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));
-            int env = getEnvType((int)pos.x, (int)pos.z);
+            int env = GetEnvType((int)pos.x, (int)pos.z);
 
             // 最大ステップ数チェック
             if (currentStep > maxStepsPerEpisode)
             {
                 Debug.LogWarning("AI: 最大行動回数を超えました");
-                env = 0;
+                env = 0; // 強制終了扱い
             }
 
-            // サイズ縮小演出
-            if (currentStep > 50 && currentStep <= 100)
-            {
-                float scaleFactor = Mathf.Lerp(1.0f, 0.0f, (currentStep - 50) / 50.0f);
-                transform.localScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
-            }
-
-            // 終端チェック
+            // 終端チェック: ゴール到達
             if (env == 2)
             {
-                Debug.Log("AI: GOAL に到達しました");
+                Debug.Log("AI: ゴール到達！");
+                UpdateThinkingUI("🎯 ゴール到達！");
                 yield return new WaitForSeconds(1.5f);
-                GameController.instance.SendMessage("OnAIGoal");
-                ResetToStart();
-                yield return new WaitForSeconds(0.5f);
-                continue;
+
+                if (GameController.instance != null)
+                {
+                    GameController.instance.OnAIGoal();
+                }
+                yield break; // ループ終了
             }
+            // 終端チェック: 落下
             else if (env == 0)
             {
-                Debug.Log("AI: 落下しました");
+                Debug.Log($"AI: 落下しました（試行{attemptCount}/{maxAttempts}）");
+                UpdateThinkingUI($"💀 落下... 試行 {attemptCount}/{maxAttempts}");
                 yield return new WaitForSeconds(1.5f);
-                GameController.instance.SendMessage("OnAIFall");
-                ResetToStart();
-                yield return new WaitForSeconds(0.5f);
-                continue;
+
+                if (GameController.instance != null)
+                {
+                    GameController.instance.OnAIFall();
+                }
+
+                // リトライ可能かチェック
+                if (attemptCount < maxAttempts)
+                {
+                    ResetToStart();
+                    yield return new WaitForSeconds(0.5f);
+                    continue;
+                }
+                else
+                {
+                    Debug.Log("AI: 最大試行回数に達しました");
+                    yield break; // ループ終了
+                }
             }
 
             // 行動決定と移動
             if (!isMoving)
             {
-                int chosenAction = DecideActionForCurrentState();
+                int chosenAction = DecideAction();
                 Vector3 moveDir = ActionToVector(chosenAction);
                 Vector3 targetPos = new Vector3(
                     Mathf.Round(transform.position.x) + moveDir.x,
                     transform.position.y,
                     Mathf.Round(transform.position.z) + moveDir.z
                 );
-                StartCoroutine(MoveToPosByAI(targetPos, chosenAction));
+                StartCoroutine(MoveToPos(targetPos, chosenAction));
                 currentStep++;
             }
 
@@ -365,193 +243,170 @@ public class AIController : MonoBehaviour
     }
 
     /// <summary>
-    /// 現在の状態に基づいて行動を決定
-    /// 優先順位: Q-Table → IL-Policy → マップベースのフォールバック
+    /// 行動決定メイン処理（ハイブリッドアプローチ）
+    /// 優先順位: 1. BC Policy → 2. 報酬勾配 → 3. ランダム
     /// </summary>
-    private int DecideActionForCurrentState()
+    private int DecideAction()
     {
         int px = (int)Mathf.Round(transform.position.x);
         int py = (int)Mathf.Round(transform.position.z);
+
+        // 現在の状態キーを構築
         string stateKey = BuildStateKey(px, py);
 
-        // === 1. Q-Tableによる推論 ===
-        if (qTable != null && qTable.ContainsKey(stateKey))
+        // 思考プロセス情報を構築
+        string thinkInfo = BuildThinkingInfo(px, py, stateKey);
+
+        // 優先順位1: BC Policy（確率分布サンプリング）
+        if (bcPolicy != null && bcPolicy.ContainsKey(stateKey))
         {
-            List<float> qrow = qTable[stateKey];
-            if (qrow != null && qrow.Count >= ACTION_SPACE + 1)
+            int action = SampleFromBCPolicy(stateKey, out string bcInfo);
+            thinkInfo += bcInfo;
+            thinkInfo += $"\n✅ 選択: BC Policy から action={action} ({GetActionName(action)})";
+
+            UpdateThinkingUI(thinkInfo);
+            Debug.Log($"AI思考: BC Policy選択 action={action}");
+            return action;
+        }
+
+        // 優先順位2: 報酬勾配参照（未知状態の場合）
+        if (rewardGradient != null && rewardGradient.Count > 0)
+        {
+            int action = SelectActionByRewardGradient(px, py, out string rgInfo);
+            if (action > 0)
             {
-                int bestAction = GetBestActionFromQTable(qrow, px, py);
-                if (bestAction > 0)
-                {
-                    Debug.Log($"Q-Table選択: action={bestAction}");
-                    return bestAction;
-                }
+                thinkInfo += rgInfo;
+                thinkInfo += $"\n✅ 選択: 報酬勾配参照 action={action} ({GetActionName(action)})";
+
+                UpdateThinkingUI(thinkInfo);
+                Debug.Log($"AI思考: 報酬勾配選択 action={action}");
+                return action;
             }
         }
 
-        // === 2. IL-Policyによる推論 ===
-        if (ilPolicy != null && ilPolicy.ContainsKey(stateKey))
-        {
-            int ilAction = ilPolicy[stateKey];
-            // ILの行動が安全かチェック
-            if (IsActionSafe(px, py, ilAction))
-            {
-                Debug.Log($"IL-Policy選択: action={ilAction}");
-                return ilAction;
-            }
-        }
+        // 優先順位3: 完全未知状態 → ランダム行動
+        int randomAction = UnityEngine.Random.Range(1, 5);
+        thinkInfo += "\n⚠️ 完全未知状態（BC/報酬勾配なし）";
+        thinkInfo += $"\n✅ 選択: ランダム action={randomAction} ({GetActionName(randomAction)})";
 
-        // === 3. マップベースのフォールバック ===
-        Debug.Log("フォールバック: マップベース推論");
-        return GetMapBasedAction(px, py);
+        UpdateThinkingUI(thinkInfo);
+        Debug.Log($"AI思考: ランダム選択 action={randomAction}");
+        return randomAction;
     }
 
     /// <summary>
-    /// Q-Tableから最適な行動を選択（マップ情報を考慮）
+    /// 思考プロセス情報を構築
     /// </summary>
-    private int GetBestActionFromQTable(List<float> qrow, int x, int y)
+    private string BuildThinkingInfo(int px, int py, string stateKey)
     {
-        // 各行動のQ値と安全性を評価
-        List<(int action, float score)> candidates = new List<(int, float)>();
+        int env = GetEnvType(px, py);
+        int envUp = GetEnvType(px, py + 1);
+        int envDown = GetEnvType(px, py - 1);
+        int envRight = GetEnvType(px + 1, py);
+        int envLeft = GetEnvType(px - 1, py);
 
-        for (int a = 1; a <= ACTION_SPACE; a++)
+        string info = $"━━━ ステップ {currentStep} ━━━\n";
+        info += $"📍 位置: ({px}, {py})\n";
+        info += $"🌍 環境: 現在={GetEnvName(env)} 上={GetEnvName(envUp)} 下={GetEnvName(envDown)} 右={GetEnvName(envRight)} 左={GetEnvName(envLeft)}\n";
+        info += $"🔑 状態キー: {stateKey}\n";
+
+        // ゴール座標情報
+        if (goalPositions != null && goalPositions.Count > 0)
         {
-            float qValue = qrow[a];
-            
-            // 次の位置を計算
-            Vector2Int nextPos = GetNextPosition(x, y, a);
-            
-            // マップ情報による安全性チェック
-            float safetyBonus = 0f;
-            if (knownMap.ContainsKey(nextPos))
-            {
-                int tileType = knownMap[nextPos];
-                if (tileType == 0)
-                {
-                    // 穴は大幅減点
-                    safetyBonus = -5000f;
-                }
-                else if (tileType == 2 && goalPosition.HasValue && nextPos == goalPosition.Value)
-                {
-                    // ゴールは大幅加点
-                    safetyBonus = 10000f;
-                }
-                else if (tileType == 1)
-                {
-                    // 安全なステージは少し加点
-                    safetyBonus = 10f;
-                }
-                // トラップ(3)は特別な調整なし
-            }
-
-            // ゴールへの距離ボーナス
-            float goalBonus = 0f;
-            if (goalPosition.HasValue)
-            {
-                float distBefore = Vector2.Distance(new Vector2(x, y), goalPosition.Value);
-                float distAfter = Vector2.Distance(nextPos, goalPosition.Value);
-                if (distAfter < distBefore)
-                {
-                    goalBonus = 50f; // ゴールに近づく行動に加点
-                }
-            }
-
-            float totalScore = qValue + safetyBonus + goalBonus;
-            candidates.Add((a, totalScore));
+            var topGoal = goalPositions.OrderByDescending(kv => kv.Value).First();
+            info += $"🎯 推定ゴール: {topGoal.Key} (出現{topGoal.Value}回)\n";
         }
 
-        // 最高スコアの行動を選択
-        var best = candidates.OrderByDescending(c => c.score).First();
-        
-        // スコアが極端に低い場合は無効
-        if (best.score < -9000f)
-        {
-            return -1; // フォールバックへ
-        }
-        
-        return best.action;
+        return info;
     }
 
     /// <summary>
-    /// 行動が安全かチェック
+    /// BC Policyから確率的にサンプリング（温度パラメータ付き）
     /// </summary>
-    private bool IsActionSafe(int x, int y, int action)
+    private int SampleFromBCPolicy(string stateKey, out string info)
     {
-        Vector2Int nextPos = GetNextPosition(x, y, action);
-        
-        if (knownMap.ContainsKey(nextPos))
+        Dictionary<string, int> actionCounts = bcPolicy[stateKey];
+
+        // 温度パラメータ付きソフトマックスで確率を計算
+        Dictionary<int, float> probs = new Dictionary<int, float>();
+
+        info = "📊 BC Policy 確率分布:\n";
+
+        float sumExp = 0f;
+        for (int a = 1; a <= 4; a++)
         {
-            int tileType = knownMap[nextPos];
-            return tileType != 0; // 穴でなければ安全
+            int count = actionCounts.ContainsKey(a.ToString()) ? actionCounts[a.ToString()] : 0;
+            float exp = Mathf.Exp(count / temperature);
+            sumExp += exp;
+            probs[a] = exp;
         }
 
-        return true; // 不明なタイルは一応安全とみなす
+        // 正規化
+        for (int a = 1; a <= 4; a++)
+        {
+            probs[a] /= sumExp;
+            int count = actionCounts.ContainsKey(a.ToString()) ? actionCounts[a.ToString()] : 0;
+            info += $"  {GetActionName(a)}: 出現{count}回 → 確率{probs[a] * 100:F1}%\n";
+        }
+
+        // ルーレット選択
+        float rand = UnityEngine.Random.Range(0f, 1f);
+        float cumulative = 0f;
+
+        for (int a = 1; a <= 4; a++)
+        {
+            cumulative += probs[a];
+            if (rand <= cumulative)
+            {
+                return a;
+            }
+        }
+
+        return 1; // フォールバック
     }
 
     /// <summary>
-    /// マップベースのフォールバック行動決定
+    /// 報酬勾配を参照して行動選択（各方向の次状態の報酬を比較）
     /// </summary>
-    private int GetMapBasedAction(int x, int y)
+    private int SelectActionByRewardGradient(int px, int py, out string info)
     {
-        Vector2Int now = new Vector2Int(x, y);
-        List<(int action, float score)> candidates = new List<(int, float)>();
+        info = "📈 報酬勾配による評価:\n";
 
-        for (int a = 1; a <= ACTION_SPACE; a++)
+        Dictionary<int, float> actionRewards = new Dictionary<int, float>();
+
+        for (int a = 1; a <= 4; a++)
         {
-            Vector2Int nextPos = GetNextPosition(x, y, a);
-            float score = 0f;
+            Vector2Int nextPos = GetNextPosition(px, py, a);
+            string nextStateKey = BuildStateKey(nextPos.x, nextPos.y);
 
-            // マップ情報による評価
-            if (knownMap.ContainsKey(nextPos))
+            float reward = 0f;
+            bool found = false;
+
+            if (rewardGradient != null && rewardGradient.ContainsKey(nextStateKey))
             {
-                int tileType = knownMap[nextPos];
-                if (tileType == 0)
-                {
-                    score = -1000f; // 穴は避ける
-                }
-                else if (tileType == 2)
-                {
-                    score = 1000f; // ゴールは最優先
-                }
-                else if (tileType == 1)
-                {
-                    score = 100f; // ステージは安全
-                }
-                else if (tileType == 3)
-                {
-                    score = 50f; // トラップは低優先度だが避けない
-                }
-            }
-            else
-            {
-                score = 10f; // 不明なタイルは探索価値あり
+                reward = rewardGradient[nextStateKey].avg;
+                found = true;
             }
 
-            // ゴールへの距離
-            if (goalPosition.HasValue)
-            {
-                float dist = Vector2.Distance(nextPos, goalPosition.Value);
-                score += 10000f / (dist + 1f); // 近いほど高得点
-            }
-            Debug.Log($"フォールバック評価: action={a} score={score}");
-
-            candidates.Add((a, score));
+            actionRewards[a] = reward;
+            string status = found ? $"{reward:F2}" : "不明";
+            info += $"  {GetActionName(a)}: 平均報酬={status}\n";
         }
 
-        // 最高スコアの行動を選択
-        var best = candidates.OrderByDescending(c => c.score).First();
-        
-        // 全て穴の場合はランダム
-        if (best.score < -500f)
+        // 有効なデータがあるか確認
+        bool hasValidData = actionRewards.Values.Any(r => r != 0f);
+        if (!hasValidData)
         {
-            return UnityEngine.Random.Range(1, 5);
+            return -1; // ランダムにフォールバック
         }
 
-        return best.action;
+        // 最も報酬が高い方向を選択
+        int bestAction = actionRewards.OrderByDescending(kv => kv.Value).First().Key;
+        return bestAction;
     }
 
     /// <summary>
-    /// 次の位置を計算
+    /// 次の位置を取得
     /// </summary>
     private Vector2Int GetNextPosition(int x, int y, int action)
     {
@@ -566,17 +421,27 @@ public class AIController : MonoBehaviour
     }
 
     /// <summary>
-    /// 状態キーを構築
+    /// 状態キー構築（環境パターンのみ、座標非依存）
+    /// train.pyのencode_state_env_onlyと一致
     /// </summary>
     private string BuildStateKey(int x, int y)
     {
-        int env = getEnvType(x, y);
-        int up = getEnvType(x, y + 1);
-        int right = getEnvType(x + 1, y);
-        int down = getEnvType(x, y - 1);
-        int left = getEnvType(x - 1, y);
+        int env = GetEnvType(x, y);
+        int up = GetEnvType(x, y + 1);
+        int down = GetEnvType(x, y - 1);
+        int right = GetEnvType(x + 1, y);
+        int left = GetEnvType(x - 1, y);
 
-        return $"({x}, {y}, {env}, {up}, {down}, {right}, {left})";
+        return $"({env}, {up}, {down}, {right}, {left})";
+    }
+
+    /// <summary>
+    /// 環境タイプを取得
+    /// </summary>
+    private int GetEnvType(int x, int z)
+    {
+        if (stageManager == null) return 0;
+        return stageManager.GetTileState(x, z);
     }
 
     /// <summary>
@@ -595,58 +460,99 @@ public class AIController : MonoBehaviour
     }
 
     /// <summary>
-    /// AI移動コルーチン
+    /// 行動名を取得
     /// </summary>
-    private IEnumerator MoveToPosByAI(Vector3 targetPos, int action)
+    private string GetActionName(int action)
+    {
+        switch (action)
+        {
+            case 1: return "上↑";
+            case 2: return "右→";
+            case 3: return "下↓";
+            case 4: return "左←";
+            default: return "不明";
+        }
+    }
+
+    /// <summary>
+    /// 環境タイプ名を取得
+    /// </summary>
+    private string GetEnvName(int env)
+    {
+        switch (env)
+        {
+            case 0: return "穴";
+            case 1: return "床";
+            case 2: return "G";
+            case 3: return "罠";
+            default: return "?";
+        }
+    }
+
+    /// <summary>
+    /// 移動処理（movP.csのMoveToPos()と同じ実装）
+    /// </summary>
+    private IEnumerator MoveToPos(Vector3 targetPos, int action)
     {
         isMoving = true;
-        float elapsedTime = 0;
-        Vector3 from = transform.position;
-        float duration = currentStep > 50 ? 0.2f : 0.25f;
 
+        // 回転処理（movP.csと同じ）
         int rotate = 0;
         switch (action)
         {
-            case 1: rotate = 0;     // 上
-                break;
-            case 2: rotate = 90;    // 右
-                break;
-            case 3: rotate = 180;   // 下
-                break;
-            case 4: rotate = -90;   // 左
-                break;
+            case 1: rotate = 0; break;      // 上
+            case 2: rotate = 90; break;     // 右
+            case 3: rotate = 180; break;    // 下
+            case 4: rotate = -90; break;    // 左
         }
         transform.rotation = Quaternion.Euler(0, rotate, 0);
 
-        while (elapsedTime < duration)
+        // 移動アニメーション（movP.csと同じ0.2秒）
+        float elapsedTime = 0f;
+        Vector3 startPosMove = transform.position;
+
+        while (elapsedTime < 0.2f)
         {
-            transform.position = Vector3.Lerp(from, targetPos, elapsedTime / duration);
+            transform.position = Vector3.Lerp(startPosMove, targetPos, elapsedTime / 0.2f);
             elapsedTime += Time.deltaTime;
             yield return null;
         }
 
         transform.position = targetPos;
-        int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
 
-        Debug.Log($"AI Move: pos=({targetPos.x},{targetPos.z}) env={envValue} action={action}");
+        // 環境チェック
+        int envValue = GetEnvType((int)targetPos.x, (int)targetPos.z);
+
+        // ステージマネージャーに移動を通知（色変更など）
+        if (stageManager != null)
+        {
+            stageManager.SendMessage("MatsChange", targetPos, SendMessageOptions.DontRequireReceiver);
+        }
 
         if (envValue == 2)
         {
-            Debug.Log("AI: ゴール到達！");
+            // ゴール到達
+            Debug.Log($"AI: ゴール到達 pos=({targetPos.x},{targetPos.z})");
         }
         else if (envValue == 0)
         {
+            // 落下
+            Debug.Log($"AI: 落下 pos=({targetPos.x},{targetPos.z})");
             rb.isKinematic = false;
         }
         else if (envValue == 3)
         {
-            StartCoroutine(HandleTrapTile(targetPos));
+            // トラップ処理（movP.csのTrapped()と同じ）
+            yield return StartCoroutine(HandleTrap(targetPos));
         }
 
         isMoving = false;
     }
 
-    private IEnumerator HandleTrapTile(Vector3 trapPos)
+    /// <summary>
+    /// トラップ処理（movP.csのTrapped()と同じ実装）
+    /// </summary>
+    private IEnumerator HandleTrap(Vector3 trapPos)
     {
         // 移動距離をランダムに決定 (2～4マス)
         int moveDistance = UnityEngine.Random.Range(2, 5);
@@ -660,16 +566,13 @@ public class AIController : MonoBehaviour
         };
         int dirIndex = UnityEngine.Random.Range(0, directions.Length);
         Vector3 direction = directions[dirIndex];
-        int trapAction = dirIndex + 1; // log用に1増やす
 
         // 移動先のターゲット位置を計算
-        Vector3 startPos = transform.position;
-        Vector3 targetPos = startPos + direction * moveDistance;
+        Vector3 startPosT = transform.position;
+        Vector3 targetPosT = startPosT + direction * moveDistance;
 
         // 放物線の高さを設定
         float arcHeight = 2.0f;
-
-        // 移動時間
         float moveDuration = 1.0f;
         float elapsedTime = 0;
 
@@ -680,58 +583,69 @@ public class AIController : MonoBehaviour
             float t = elapsedTime / moveDuration;
 
             // 線形補間で XZ 平面の位置を計算
-            Vector3 flatPos = Vector3.Lerp(startPos, targetPos, t);
+            Vector3 flatPos = Vector3.Lerp(startPosT, targetPosT, t);
 
             // 放物線の高さを計算
             float height = Mathf.Sin(t * Mathf.PI) * arcHeight;
 
             // 新しい位置を設定
-            transform.position = new Vector3(flatPos.x, startPos.y + height, flatPos.z);
+            transform.position = new Vector3(flatPos.x, startPosT.y + height, flatPos.z);
 
             yield return null;
         }
 
         // 最終的な位置をターゲット位置に設定
-        transform.position = targetPos;
+        transform.position = targetPosT;
 
-        int envValue = getEnvType((int)targetPos.x, (int)targetPos.z);
+        int envValue = GetEnvType((int)targetPosT.x, (int)targetPosT.z);
 
-        Debug.Log($"AI Trap: pos=({targetPos.x},{targetPos.z}) env={envValue} action={trapAction}");
+        // ステージマネージャーに移動を通知
+        if (stageManager != null)
+        {
+            stageManager.SendMessage("MatsChange", targetPosT, SendMessageOptions.DontRequireReceiver);
+        }
+
+        Debug.Log($"AI: トラップ後着地 pos=({targetPosT.x},{targetPosT.z}) env={envValue}");
 
         if (envValue == 2)
         {
-            Debug.Log("AI: ゴール到達！");
+            // ゴール到達
+            Debug.Log("AI: トラップからのゴール到達");
         }
         else if (envValue == 0)
         {
-            Debug.Log("AI: 落下しました");
+            // 落下
+            Debug.Log("AI: トラップから落下");
             rb.isKinematic = false;
         }
         else if (envValue == 3)
         {
-            // さらに罠マスに踏み込んだ場合は再度実行
-            yield return StartCoroutine(HandleTrapTile(targetPos));
+            // さらにトラップに踏み込んだ場合は再度実行
+            yield return StartCoroutine(HandleTrap(targetPosT));
         }
     }
 
     /// <summary>
-    /// 環境タイプを取得
+    /// 思考プロセスUIを更新
     /// </summary>
-    private int getEnvType(int x, int z)
+    private void UpdateThinkingUI(string info)
     {
-        if (stageGenerator == null) return 0;
-        return stageGenerator.GetTileState(x, z);
-    }
+        currentThinkingInfo = info;
 
-    /// <summary>
-    /// デバッグ用リセット
-    /// </summary>
-    void Update()
-    {
-        if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
+        if (thinkingText != null)
         {
-            ResetToStart();
-            Debug.Log("AI: Rキーでリセット");
+            thinkingText.text = info;
         }
+
+        // デバッグログにも出力
+        Debug.Log($"[AI思考]\n{info}");
+    }
+
+    /// <summary>
+    /// 現在の思考情報を取得（外部参照用）
+    /// </summary>
+    public string GetCurrentThinkingInfo()
+    {
+        return currentThinkingInfo;
     }
 }

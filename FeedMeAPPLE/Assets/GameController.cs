@@ -16,6 +16,10 @@ public class GameController : MonoBehaviour
     public Button restartButton;
     public Text statusText;
 
+    [Header("AI思考プロセス可視化")]
+    public Text aiThinkingText;
+    public Toggle aiThinkingToggle;
+
     public RawImage startGamen;
     public RawImage clearGamen;
     public RawImage failGamen;
@@ -34,8 +38,10 @@ public class GameController : MonoBehaviour
     private string pythonScriptPath = "Assets/train.py"; // プロジェクトルートからのパス*/
     private bool isTraining = false;
     private string aiModelPath;
-    private string qModelFile = "ai-model_q_table.json";
-    private string ilModelFile = "ai-model_il_policy.json";
+    // 新しいモデルファイル名（行動クローニングベース）
+    private string bcPolicyFile = "bc_policy.json";
+    private string rewardGradientFile = "reward_gradient.json";
+    private string goalPositionsFile = "goal_positions.json";
     void Awake()
     {
         // シングルトンインスタンスの設定
@@ -65,6 +71,28 @@ public class GameController : MonoBehaviour
         statusText.text = "デモプレイを開始してください。";
         startButton.gameObject.SetActive(true);
         restartButton.gameObject.SetActive(false);
+
+        // AI思考プロセスUIの初期化
+        if (aiThinkingText != null)
+        {
+            aiThinkingText.gameObject.SetActive(false);
+        }
+        if (aiThinkingToggle != null)
+        {
+            aiThinkingToggle.gameObject.SetActive(false);
+            aiThinkingToggle.onValueChanged.AddListener(OnThinkingToggleChanged);
+        }
+    }
+
+    /// <summary>
+    /// AI思考プロセス表示のトグル切り替え
+    /// </summary>
+    private void OnThinkingToggleChanged(bool isOn)
+    {
+        if (aiThinkingText != null)
+        {
+            aiThinkingText.gameObject.SetActive(isOn);
+        }
     }
 
     /// <summary>
@@ -111,7 +139,7 @@ public class GameController : MonoBehaviour
     {
         // Pythonスクリプトのフルパスを取得
         //string scriptFullPath = Path.Combine(Application.dataPath, "..", pythonScriptPath);
-        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainex");
+        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainexxx");
 
         // --- 1. Pythonプロセスを開始 ---
         ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -163,19 +191,24 @@ public class GameController : MonoBehaviour
     /// </summary>
     private void CheckForModelFiles()
     {
-        string qModelPath = Path.Combine(aiModelPath, qModelFile);
-        string ilModelPath = Path.Combine(aiModelPath, ilModelFile);
+        string bcPolicyPath = Path.Combine(aiModelPath, bcPolicyFile);
+        string rewardGradientPath = Path.Combine(aiModelPath, rewardGradientFile);
+        string goalPositionsPath = Path.Combine(aiModelPath, goalPositionsFile);
 
-        if (File.Exists(qModelPath) && File.Exists(ilModelPath))
+        // BC Policyは必須、他はオプション
+        if (File.Exists(bcPolicyPath))
         {
             // 成功: ファイル発見
-            statusText.text = "学習完了！シミュレーションを開始できます。";
+            string extraInfo = "";
+            if (File.Exists(rewardGradientPath)) extraInfo += " 報酬勾配✓";
+            if (File.Exists(goalPositionsPath)) extraInfo += " ゴール座標✓";
+            statusText.text = $"学習完了！BC Policy✓{extraInfo}\nシミュレーションを開始できます。";
             simulateButton.gameObject.SetActive(true); // シミュレーションボタンを表示
         }
         else
         {
             // 失敗: ファイルが見つからない
-            UnityEngine.Debug.LogError("学習プロセスは成功しましたが、指定されたJSONモデルファイルが見つかりません。");
+            UnityEngine.Debug.LogError("学習プロセスは成功しましたが、BC Policyファイルが見つかりません。");
             statusText.text = "学習完了。しかしモデルファイルが見つかりません。";
         }
     }
@@ -188,9 +221,27 @@ public class GameController : MonoBehaviour
         simulateButton.gameObject.SetActive(false);
         statusText.text = "AIシミュレーション実行中...";
 
+        // AI思考プロセスUIを有効化
+        if (aiThinkingToggle != null)
+        {
+            aiThinkingToggle.gameObject.SetActive(true);
+            aiThinkingToggle.isOn = true; // デフォルトで表示ON
+        }
+        if (aiThinkingText != null)
+        {
+            aiThinkingText.gameObject.SetActive(true);
+        }
+
         // AIプレイヤーのGameObjectをアクティブにする
-        // これにより、AIPlayer.cs の Start() が実行され、AIがモデルを読み込み動き出します。
         aiPlayerObject.SetActive(true);
+
+        // AIControllerにthinkingTextを渡す
+        AIController aiController = aiPlayerObject.GetComponent<AIController>();
+        if (aiController != null && aiThinkingText != null)
+        {
+            aiController.thinkingText = aiThinkingText;
+        }
+
         aiPlayerObject.SendMessage("Onstart");
     }
 
@@ -200,6 +251,10 @@ public class GameController : MonoBehaviour
         clearGamen.gameObject.SetActive(true);
         aiPlayerObject.SetActive(false);
         restartButton.gameObject.SetActive(true);
+
+        // AI思考プロセスUIを非表示
+        if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
+        if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
     }
     int falseCount = 0;
     public void OnAIFall()
@@ -211,6 +266,10 @@ public class GameController : MonoBehaviour
             failGamen.gameObject.SetActive(true);
             restartButton.gameObject.SetActive(true);
             aiPlayerObject.SetActive(false);
+
+            // AI思考プロセスUIを非表示
+            if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
+            if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
         }
     }
 
@@ -221,6 +280,10 @@ public class GameController : MonoBehaviour
         clearGamen.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
         falseCount = 0;
+
+        // AI思考プロセスUIを非表示
+        if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
+        if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
 
         aiPlayerObject.SetActive(false);
         demoPlayerObject.SetActive(true);
