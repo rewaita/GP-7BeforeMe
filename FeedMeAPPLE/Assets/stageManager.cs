@@ -1,11 +1,12 @@
 using UnityEngine;
 using System.Collections.Generic;
 using System;
+using System.Collections;
 //using System.IO.Hashing;
 
 public class StageManager : MonoBehaviour
 {
-    public GameObject blockPrefab; //cube,line1,line2を含む
+    public GameObject blockPrefab; //cube
     public GameObject goalBlock;
     public GameObject tekiBlock;
 
@@ -22,12 +23,19 @@ public class StageManager : MonoBehaviour
     private int zMax = 25;
     private Vector3 origin = new Vector3(0, 0, 0); // 基準位置
 
-    // ステージ状態管理用（1=ステージあり, 0=穴）
+    // ステージ（1=ステージあり, 0=穴, 2=ゴール, 3=移動罠）
     private int[,] stageMap;
     private bool isStageGenerated = false;
-
     private GameObject[,,] copiedBlocks;
     private List<GameObject> copiedStage = new List<GameObject>();
+
+    // 鏡ステージ用データ構造
+    private int[,] mStageMap;
+    private GameObject[,] mCopiedBlocks;
+    private List<GameObject> mCopiedStage = new List<GameObject>();
+    
+    // 鏡ステージ用の複製ゴールブロック（削除用）
+    private GameObject mirroredGoalBlock = null;
 
     public void OnStartButton()
     {
@@ -38,8 +46,7 @@ public class StageManager : MonoBehaviour
     public void OnRestartButton()
     {
         // 既存のステージ（ブロック）を削除
-        Debug.Log("ステージ再生成");
-        NextStage();
+        NextStage();//ステージ削除
 
         GenerateStage();
         isStageGenerated = true;
@@ -69,9 +76,31 @@ public class StageManager : MonoBehaviour
             }
         }
         
-        stageMap = null;
-        isStageGenerated = false;
+        // 鏡ステージのブロックも削除
+        mCopiedStage.ForEach(block => Destroy(block));
+        mCopiedStage.Clear();
         
+        // 鏡ゴールブロックも削除
+        if (mirroredGoalBlock != null)
+        {
+            Destroy(mirroredGoalBlock);
+            mirroredGoalBlock = null;
+        }
+
+        for (int z = 0; z < depth; z++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                if (mCopiedBlocks != null && mCopiedBlocks[x, z] != null)
+                {
+                    Destroy(mCopiedBlocks[x, z]);
+                    mCopiedBlocks[x, z] = null;
+                }
+            }
+        }
+        stageMap = null;
+        mStageMap = null;
+        isStageGenerated = false;
     }
 
     void GenerateStage()
@@ -82,7 +111,19 @@ public class StageManager : MonoBehaviour
         stageMap = new int[width, depth];
         copiedBlocks = new GameObject[width, depth,7];
 
-        // 1. まず全てを「ブロック(1)」で埋める
+        mStageMap = new int[width, depth];
+        mCopiedBlocks = new GameObject[width, depth];
+        
+        //mStageを全て0
+        for (int z = 0; z < depth; z++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                mStageMap[x, z] = 0;
+            }
+        }
+        
+        //全て1
         for (int z = 0; z < depth; z++)
         {
             for (int x = 0; x < width; x++)
@@ -91,7 +132,7 @@ public class StageManager : MonoBehaviour
             }
         }
 
-        // 2. ゴール地点の設定 (手前2列)
+        //ゴール地点の設定 (手前2列)
         for (int z = depth - 2; z < depth; z++)
         {
             for (int x = 0; x < width; x++)
@@ -106,14 +147,14 @@ public class StageManager : MonoBehaviour
             goalBlock.transform.position = origin + new Vector3(0, 0, zMax);
         }
 
-        // 3. 「絶対に通行可能な正解ルート」を確保する (保護フラグ 9 を立てる)
+        //正解ルート(9)
         CreateGuaranteedPath(width, depth);
         CreateGuaranteedPath(width, depth);// 2回呼び出して道を複雑化
 
-        // 4. ランダムに穴を掘る（複雑な形状＆行き止まり作成）
+        //穴作成
         CarveComplexHoles(width, depth);
 
-        // 5. スタート地点の安全地帯を作る
+        //スタート地点の安全地帯
         for (int z = 4; z < 7; z++)
         {
             for (int x = 0; x < width; x++)
@@ -122,11 +163,25 @@ public class StageManager : MonoBehaviour
             }
         }
 
-        // 6. 環境3（敵ブロック）を生成する
+        //罠生成(3)
         GenerateEnvironment3(width, depth); 
 
-        // 7. ステージ生成（Instantiate）
-        BuildStage(width, depth);
+        //ステージ構築
+        //BuildStage(width, depth);
+
+        // 8. 鏡ステージのゴールブロック配置（x方向にステージ幅分ずらす）
+        // AI用ステージ移動時に削除するため、参照を保持
+        if (goalBlock != null)
+        {
+            // 既存の鏡ゴールがあれば削除
+            if (mirroredGoalBlock != null)
+            {
+                Destroy(mirroredGoalBlock);
+            }
+            
+            mirroredGoalBlock = Instantiate(goalBlock, origin + new Vector3(width, 0, zMax), Quaternion.identity, transform);
+            mirroredGoalBlock.transform.localScale = new Vector3(width, 1, 3);
+        }
     }
 
     /// <summary>
@@ -134,12 +189,10 @@ public class StageManager : MonoBehaviour
     /// </summary>
     void CreateGuaranteedPath(int width, int depth)
     {
-        int oX = width / 2; // スタートX位置
+        int oX = width / 2;
         int oZ = zMin;
         for (int z = 0; z < depth - 2; z++)
         {
-            
-            // 現在地を保護(9)に設定
             stageMap[oX, z] = 9;
 
             // 次のZに進む前に、確率で横に少し寄り道させる（道をうねらせる）
@@ -163,7 +216,7 @@ public class StageManager : MonoBehaviour
     void CarveComplexHoles(int width, int depth)
     {
         // ステージの密度調整（値が大きいほど穴だらけになる）
-        int holeAttempts = (int)(depth * 1.7f); 
+        int holeAttempts = (int)(depth * 2.0f); 
 
         for (int i = 0; i < holeAttempts; i++)
         {
@@ -352,6 +405,8 @@ public class StageManager : MonoBehaviour
             }
         }
 
+        int width = xMax - xMin + 1; // ステージの幅
+
         // 1(通常ブロック) または 9(保護ブロック) なら blockPrefab を使用
         if (stageMap[xi, zi] == 1 || stageMap[xi, zi] == 9)
         {
@@ -361,6 +416,15 @@ public class StageManager : MonoBehaviour
             block.GetComponent<Renderer>().material = new Material(floor1);
             //コピーしたブロックを配列で保存
             copiedBlocks[xi, zi, 0] = block;
+
+            int mXi = (xMax - xMin) - xi;  // X軸対称
+            mStageMap[mXi, zi] = stageMap[xi, zi];
+            int shiftedX = mXi + xMin + width;  // x方向にステージ幅分ずらす
+            Vector3 mPos = origin + new Vector3(shiftedX, 0, zi + zMin);
+            GameObject mBlock = Instantiate(blockPrefab, mPos, Quaternion.identity, transform);
+            mBlock.GetComponent<Renderer>().material = new Material(floor1);
+            mCopiedBlocks[mXi, zi] = mBlock;
+            mCopiedStage.Add(mBlock);
         }
         // 3(敵ブロック) なら tekiBlock を使用
         else if (stageMap[xi, zi] == 3)
@@ -369,20 +433,45 @@ public class StageManager : MonoBehaviour
             Vector3 pos = origin + new Vector3(xi + xMin, 0, zi + zMin);
             GameObject block = Instantiate(tekiBlock, pos, Quaternion.identity, transform);
             copiedBlocks[xi, zi, 0] = block;
+
+            // 鏡ステージにも複製（x方向にステージ幅分ずらす）
+            int mXi = (xMax - xMin) - xi;  // X軸対称
+            mStageMap[mXi, zi] = stageMap[xi, zi];
+            int shiftedX = mXi + xMin + width;  // x方向にステージ幅分ずらす
+            Vector3 mPos = origin + new Vector3(shiftedX, 0, zi + zMin);
+            GameObject mBlock = Instantiate(tekiBlock, mPos, Quaternion.identity, transform);
+            mCopiedBlocks[mXi, zi] = mBlock;
+            mCopiedStage.Add(mBlock);
         }
     }
     /// <summary>
     /// ステージ状態を取得（1=ブロックあり, 0=穴）
+    /// ステージ移動後は単純な座標変換のみ
     /// </summary>
     public int GetTileState(int x, int z)
     {
         int xi = x - xMin;
         int zi = z - zMin;
+        
         if (xi < 0 || zi < 0 || xi >= stageMap.GetLength(0) || zi >= stageMap.GetLength(1))
             return 0; // 範囲外
+        
+        // ステージを動的に構築
         BuildStageByState(xi, zi);
         return stageMap[xi, zi];
     }
+
+    public int GetMTileState(int x, int z)
+    {
+        int xi = x - xMin;
+        int zi = z - zMin;
+        
+        if (xi < 0 || zi < 0 || xi >= mStageMap.GetLength(0) || zi >= mStageMap.GetLength(1))
+            return 0; // 範囲外
+        
+        return mStageMap[xi, zi];
+    }
+    
     public void MatsChange(Vector3 targetPos)
     {
         int x = Mathf.RoundToInt(targetPos.x);
@@ -391,6 +480,7 @@ public class StageManager : MonoBehaviour
         int zi = z - zMin;
         if (xi < 0 || zi < 0 || xi >= stageMap.GetLength(0) || zi >= stageMap.GetLength(1))
             return; // 範囲外
+
         if (stageMap[xi, zi] == 0 || stageMap[xi, zi] == 2 || stageMap[xi, zi] == 3)
             return; // 穴の場合は処理しない
         
@@ -405,58 +495,47 @@ public class StageManager : MonoBehaviour
                 break;
             }
         }
+        if (currentN == -1)
+        {
+            return; // ブロックが見つからない場合は終了
+        }
 
         // 現在のブロックを取得
         GameObject block = copiedBlocks[xi, zi, currentN];
-        Transform cubeT = block.transform.Find("cube");
-        Transform line1T = block.transform.Find("line1");
-        Transform line2T = block.transform.Find("line2");
+        Material blockMat = block.GetComponent<Renderer>().material;
 
-        if (cubeT != null)
+        if (block != null)
         {
             //Debug.Log($"Changing material at ({xi},{zi}) with n={currentN}");
             // n に応じてマテリアルを変更
             switch (currentN)
             {
                 case 0:
-                    cubeT.GetComponent<Renderer>().material = floor1;
-                    line1T.GetComponent<Renderer>().material = floor4;
-                    line2T.GetComponent<Renderer>().material = floor4;
+                    blockMat = floor1;
                     break;
                 case 1:
-                    cubeT.GetComponent<Renderer>().material = floor1;
-                    line1T.GetComponent<Renderer>().material = floor4;
-                    line2T.GetComponent<Renderer>().material = floor4;
+                    blockMat = floor1;
                     break;
                 case 2:
-                    cubeT.GetComponent<Renderer>().material = floor2;
-                    line1T.GetComponent<Renderer>().material = floor5;
-                    line2T.GetComponent<Renderer>().material = floor5;
+                    blockMat = floor2;
                     break;
                 case 3:
-                    cubeT.GetComponent<Renderer>().material = floor3;
-                    line1T.GetComponent<Renderer>().material = floor6;
-                    line2T.GetComponent<Renderer>().material = floor6;
+                    blockMat = floor3;
                     break;
                 case 4:
-                    cubeT.GetComponent<Renderer>().material = floor4;
-                    line1T.GetComponent<Renderer>().material = floor3;
-                    line2T.GetComponent<Renderer>().material = floor3;
+                    blockMat = floor4;
                     break;
                 case 5:
-                    cubeT.GetComponent<Renderer>().material = floor5;
-                    line1T.GetComponent<Renderer>().material = floor2;
-                    line2T.GetComponent<Renderer>().material = floor2;
+                    blockMat = floor5;
                     break;
                 case 6:
-                    cubeT.GetComponent<Renderer>().material = floor6;
-                    line1T.GetComponent<Renderer>().material = floor1;
-                    line2T.GetComponent<Renderer>().material = floor1;
+                    blockMat = floor6;
                     break;
                 default:
                     Debug.LogWarning($"n の値が範囲外です: {currentN}");
                     break;
             }
+            block.GetComponent<Renderer>().material = blockMat;
 
             // n をインクリメントして次のスロットに移動
             if (currentN < 6)
@@ -465,5 +544,50 @@ public class StageManager : MonoBehaviour
                 copiedBlocks[xi, zi, currentN] = null;
             }
         }
+    }
+
+    /// <summary>
+    /// AI学習用：ステージ全体をx負方向に移動し、鏡ステージを元の位置に配置
+    /// TrainButton押下時に呼び出される
+    /// </summary>
+    public IEnumerator MoveStageForAI()
+    {
+        int width = xMax - xMin + 1;
+        float moveDistance = -width;
+        
+        Debug.Log($"=== AI用ステージ移動開始 ===");
+        Debug.Log($"移動距離: x方向 {moveDistance}");
+        
+        // 1. 鏡ステージ用のゴールブロックを削除（元のゴールを使い回す）
+        if (mirroredGoalBlock != null)
+        {
+            Destroy(mirroredGoalBlock);
+            mirroredGoalBlock = null;
+            Debug.Log("鏡ゴールブロックを削除");
+        }
+        
+        // 2. アニメーション付きでステージ全体を移動
+        Vector3 startPos = transform.position;
+        Vector3 targetPos = startPos + new Vector3(moveDistance, 0, 0);
+        float duration = 10.0f; // 移動時間（秒）
+        float elapsed = 0f;
+        
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = elapsed / duration;
+            // イージング（スムーズな加減速）
+            float smoothT = t * t * (3f - 2f * t);
+            transform.position = Vector3.Lerp(startPos, targetPos, smoothT);
+            yield return null;
+        }
+        
+        transform.position = targetPos;
+        
+        // 3. originも更新（座標計算用）
+        origin += new Vector3(moveDistance, 0, 0);
+        
+        Debug.Log($"=== AI用ステージ移動完了 ===");
+        Debug.Log($"新しいorigin: {origin}");
     }
 }

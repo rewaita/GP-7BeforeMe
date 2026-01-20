@@ -4,648 +4,851 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
-using Newtonsoft.Json;
 using System.Linq;
 
+/// <summary>
+/// AIController - ハイブリッド方式AI
+/// 「行動クローニング(BC)」と「スコアベースの決定木(ランダムフォレスト)」を
+/// 組み合わせて次の行動を決定します。
+/// データは 'model_data.json' と 'parameters.json' から読み込みます。
+/// </summary>
 public class AIController : MonoBehaviour
 {
-    // ステージ参照
+    [Header("--- 参照設定 ---")]
     private StageManager stageManager;
     private Rigidbody rb;
-
-    // 移動制御
-    private bool isMoving = false;
-    private Vector3 startPos;
-
-    // 学習モデル
-    private Dictionary<string, Dictionary<string, int>> bcPolicy = null;  // BC Policy（確率分布）
-    private Dictionary<string, RewardStats> rewardGradient = null;        // 報酬勾配テーブル
-    private Dictionary<string, int> goalPositions = null;                 // ゴール座標（頻度付き）
-
-    // AI設定
-    [Tooltip("思考間隔（秒）")]
-    public float thinkInterval = 0.3f;
-
-    [Tooltip("BC Policy サンプリング温度（1.0=標準, 低いほど頻出行動を選びやすい）")]
-    public float temperature = 1.0f;
-
-    // 試行制御
-    private int currentStep = 0;
-    private int maxStepsPerEpisode = 150;
-    private int attemptCount = 0;
-    private int maxAttempts = 3;
-
-    // 思考プロセス可視化用（GameControllerから設定）
-    [HideInInspector]
     public Text thinkingText;
-    private string currentThinkingInfo = "";
 
-    // 報酬統計用の構造体
-    [Serializable]
-    public class RewardStats
+    [Header("--- 移動・試行設定 ---")]
+    [SerializeField] private float thinkInterval = 0.5f;
+    [SerializeField] private int maxStepsPerEpisode = 150;
+    [SerializeField] private int maxAttempts = 3;
+    private Vector3 startBasePos = new Vector3(0, 2, 0);
+
+    [Header("--- ハイブリッドAI設定 ---")]
+    [SerializeField][Range(0f, 1f)] private float bcWeight = 0.6f;           // BC方式の重み（0=決定木のみ, 1=BCのみ）
+    [SerializeField][Range(0f, 1f)] private float explorationRate = 0.1f;    // 探索率（ランダム行動）
+    [SerializeField] private int numDecisionTrees = 3;                        // ランダムフォレストの木の数
+
+    [Header("--- 内部状態 ---")]
+    private bool isMoving = false;
+    private int currentStep = 0;
+    private int attemptCount = 0;
+    private string currentThinkingInfo = "";
+    private bool modelLoaded = false;
+
+    // ========================================
+    // AIモデルデータ（JSONから読み込み）
+    // ========================================
+    
+    // 推定ゴール座標
+    private Vector2Int estimatedGoal = new Vector2Int(-1, -1);
+    private bool goalKnown = false;
+    
+    // 危険地帯リスト
+    private HashSet<Vector2Int> dangerZones = new HashSet<Vector2Int>();
+    
+    // 行動クローニングテーブル（周囲状況 → 行動確率）
+    private Dictionary<string, BCPolicy> bcPolicyTable = new Dictionary<string, BCPolicy>();
+    
+    // 決定木用スコア重み（parameters.jsonから読み込み）
+    private float holeFearIndex = -2.5f;   // 穴回避指数（負の値ほど回避）
+    private float trapInterest = 0.0f;     // 罠への積極性（-1.0=回避、1.0=積極）
+    private float goalBias = 0.5f;         // ゴール優先度（0.0~1.0）
+    private float goalApproachRate = 0.5f; // ゴール接近率
+    
+    // 方向別スコア（model_data.jsonから読み込み）
+    private Dictionary<int, int> tileScores = new Dictionary<int, int>
     {
-        public float avg;
-        public float max;
-        public float min;
-        public int count;
+        { 0, -100 },  // 穴
+        { 1, 0 },     // 平地
+        { 2, 100 },   // ゴール
+        { 3, -10 }    // 罠
+    };
+    private int goalDirectionBonus = 10;
+    private int revisitPenalty = -5;
+    private int unexploredBonus = 5;
+    
+    // 訪問済み座標追跡
+    private Dictionary<Vector2Int, int> visitedTiles = new Dictionary<Vector2Int, int>();
+    
+    // ランダムフォレスト用：各決定木のノイズ係数
+    private float[] treeNoiseFactors;
+
+    // BCポリシー構造体
+    [Serializable]
+    private class BCPolicy
+    {
+        public float up;
+        public float right;
+        public float down;
+        public float left;
+        public int samples;
+        
+        public float GetProbability(int action)
+        {
+            return action switch
+            {
+                1 => up,
+                2 => right,
+                3 => down,
+                4 => left,
+                _ => 0.25f
+            };
+        }
     }
+    
+    // 統計情報（parameters.jsonから）
+    private int bcStatesCount = 0;
+    private int dangerZonesCount = 0;
+
+    #region 1. 初期化・メインサイクル
 
     public void Onstart()
     {
         stageManager = FindFirstObjectByType<StageManager>();
-        if (stageManager == null)
-        {
-            Debug.LogError("StageManager が見つかりません");
-            return;
-        }
-
         rb = GetComponent<Rigidbody>();
-        startPos = new Vector3(0, 2, 0);
         attemptCount = 0;
+        visitedTiles.Clear();
 
-        // モデル読み込み
-        LoadModels();
+        // ランダムフォレスト用のノイズ係数を初期化
+        InitializeRandomForest();
 
-        // 自律プレイ開始
-        StartCoroutine(StartEpisodeAfterDelay(0.5f));
-    }
+        // モデルの読み込み（model_data.json + parameters.json）
+        LoadAIModels();
 
-    private IEnumerator StartEpisodeAfterDelay(float delay)
-    {
-        yield return new WaitForSeconds(delay);
-        ResetToStart();
-        StartCoroutine(AutonomousLoop());
+        // 実行開始
+        StartCoroutine(MainLoop());
     }
 
     /// <summary>
-    /// 学習済みモデルの読み込み
+    /// ランダムフォレスト用の各決定木にノイズ係数を設定
     /// </summary>
-    private void LoadModels()
+    private void InitializeRandomForest()
     {
-        string aiDir = Path.Combine(Application.dataPath, "DemoAIs");
-
-        // BC Policy読み込み
-        string bcPath = Path.Combine(aiDir, "bc_policy.json");
-        if (File.Exists(bcPath))
+        treeNoiseFactors = new float[numDecisionTrees];
+        for (int i = 0; i < numDecisionTrees; i++)
         {
-            try
+            // 各木に異なるバイアスを与える（-0.3 ~ +0.3）
+            treeNoiseFactors[i] = UnityEngine.Random.Range(-0.3f, 0.3f);
+        }
+    }
+
+    private IEnumerator MainLoop()
+    {
+        while (attemptCount < maxAttempts)
+        {
+            ResetToStart();
+            yield return new WaitForSeconds(0.5f);
+
+            while (true)
             {
-                string json = File.ReadAllText(bcPath);
-                bcPolicy = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, int>>>(json);
-                Debug.Log($"BC Policy読み込み成功: {bcPolicy.Count} 状態");
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"BC Policy読み込みエラー: {e.Message}");
-                bcPolicy = null;
+                // 1. 環境状態の確認
+                Vector3 currentPos = GetRoundedPos();
+                int env = GetEnvType((int)currentPos.x, (int)currentPos.z);
+
+                // 2. 終了判定（落下・ゴール・歩数超過）
+                if (IsEpisodeEnd(env, out string reason))
+                {
+                    yield return HandleEpisodeEnd(reason, env);
+                    break; // 次の試行へ
+                }
+
+                // 3. 次の行動を決定（ハイブリッド方式）
+                if (!isMoving)
+                {
+                    int action = DecideNextAction(currentPos);
+                    StartCoroutine(MoveProcess(action));
+                }
+
+                yield return new WaitForSeconds(thinkInterval);
             }
         }
+        UpdateThinkingUI("全ての試行が終了しました。");
+    }
+
+    #endregion
+
+    #region 2. AI推論ロジック（ハイブリッド方式：決定木 + 行動クローニング）
+
+    /// <summary>
+    /// ハイブリッド方式で次の行動を決定
+    /// 1. 探索率に基づきランダム行動の可能性をチェック
+    /// 2. 各方向のスコアを計算（ランダムフォレスト：複数決定木の投票）
+    /// 3. BCテーブルからの行動確率を加味
+    /// 4. 重み付けで最終スコアを決定
+    /// </summary>
+    private int DecideNextAction(Vector3 currentPos)
+    {
+        // 探索率によるランダム行動
+        if (UnityEngine.Random.value < explorationRate)
+        {
+            int randomAction = UnityEngine.Random.Range(1, 5);
+            UpdateThinkingUI($"[探索モード] ランダム行動: {GetActionName(randomAction)}");
+            return randomAction;
+        }
+
+        int px = (int)currentPos.x;
+        int pz = (int)currentPos.z;
+
+        // 周囲の環境取得
+        int envUp = GetEnvType(px, pz + 1);
+        int envDown = GetEnvType(px, pz - 1);
+        int envRight = GetEnvType(px + 1, pz);
+        int envLeft = GetEnvType(px - 1, pz);
+
+        // === 決定木（ランダムフォレスト）スコア ===
+        float[] treeScores = CalculateRandomForestScores(px, pz, envUp, envDown, envRight, envLeft);
+
+        // === 行動クローニング（BC）スコア ===
+        float[] bcScores = CalculateBCScores(envUp, envDown, envRight, envLeft);
+
+        // === ハイブリッド統合 ===
+        float[] finalScores = new float[5];
+        for (int action = 1; action <= 4; action++)
+        {
+            // 決定木とBCの重み付け平均
+            finalScores[action] = (1f - bcWeight) * treeScores[action] + bcWeight * bcScores[action];
+        }
+
+        // 最高スコアの方向を選択（同点時はランダム）
+        int bestAction = SelectBestAction(finalScores);
+
+        // 訪問記録を更新
+        Vector2Int targetTile = GetTargetTile(px, pz, bestAction);
+        if (visitedTiles.ContainsKey(targetTile))
+            visitedTiles[targetTile]++;
         else
-        {
-            Debug.LogWarning($"BC Policyファイルが見つかりません: {bcPath}");
-        }
+            visitedTiles[targetTile] = 1;
 
-        // 報酬勾配テーブル読み込み
-        string rgPath = Path.Combine(aiDir, "reward_gradient.json");
-        if (File.Exists(rgPath))
-        {
-            try
-            {
-                string json = File.ReadAllText(rgPath);
-                rewardGradient = JsonConvert.DeserializeObject<Dictionary<string, RewardStats>>(json);
-                Debug.Log($"報酬勾配テーブル読み込み成功: {rewardGradient.Count} 状態");
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"報酬勾配テーブル読み込みエラー: {e.Message}");
-                rewardGradient = null;
-            }
-        }
-        else
-        {
-            Debug.LogWarning($"報酬勾配テーブルファイルが見つかりません: {rgPath}");
-        }
+        // UI表示用のデバッグ情報
+        string info = BuildThinkingInfo(px, pz, envUp, envDown, envRight, envLeft, 
+                                         treeScores, bcScores, finalScores, bestAction);
+        UpdateThinkingUI(info);
 
-        // ゴール座標読み込み
-        string gpPath = Path.Combine(aiDir, "goal_positions.json");
-        if (File.Exists(gpPath))
-        {
-            try
-            {
-                string json = File.ReadAllText(gpPath);
-                goalPositions = JsonConvert.DeserializeObject<Dictionary<string, int>>(json);
-                Debug.Log($"ゴール座標読み込み成功: {goalPositions.Count} 箇所");
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"ゴール座標読み込みエラー: {e.Message}");
-                goalPositions = null;
-            }
-        }
-        else
-        {
-            Debug.LogWarning($"ゴール座標ファイルが見つかりません: {gpPath}");
-        }
-    }
-
-    /// <summary>
-    /// スタート位置にリセット
-    /// </summary>
-    private void ResetToStart()
-    {
-        // ランダムなX位置でスタート（-4 ~ 4の範囲）
-        float randomX = UnityEngine.Random.Range(-4f, 4f);
-        transform.position = startPos + new Vector3(randomX, 0, 0);
-        rb.linearVelocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
-        transform.rotation = Quaternion.identity;
-        transform.localScale = Vector3.one;
-        rb.isKinematic = true;
-        isMoving = false;
-        currentStep = 0;
-        attemptCount++;
-
-        UpdateThinkingUI($"=== 試行 {attemptCount}/{maxAttempts} 開始 ===\nスタート位置: ({transform.position.x:F1}, {transform.position.z:F1})");
-    }
-
-    /// <summary>
-    /// 自律ループ
-    /// </summary>
-    private IEnumerator AutonomousLoop()
-    {
-        while (true)
-        {
-            Vector3 pos = new Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));
-            int env = GetEnvType((int)pos.x, (int)pos.z);
-
-            // 最大ステップ数チェック
-            if (currentStep > maxStepsPerEpisode)
-            {
-                Debug.LogWarning("AI: 最大行動回数を超えました");
-                env = 0; // 強制終了扱い
-            }
-
-            // 終端チェック: ゴール到達
-            if (env == 2)
-            {
-                Debug.Log("AI: ゴール到達！");
-                UpdateThinkingUI("🎯 ゴール到達！");
-                yield return new WaitForSeconds(1.5f);
-
-                if (GameController.instance != null)
-                {
-                    GameController.instance.OnAIGoal();
-                }
-                yield break; // ループ終了
-            }
-            // 終端チェック: 落下
-            else if (env == 0)
-            {
-                Debug.Log($"AI: 落下しました（試行{attemptCount}/{maxAttempts}）");
-                UpdateThinkingUI($"💀 落下... 試行 {attemptCount}/{maxAttempts}");
-                yield return new WaitForSeconds(1.5f);
-
-                if (GameController.instance != null)
-                {
-                    GameController.instance.OnAIFall();
-                }
-
-                // リトライ可能かチェック
-                if (attemptCount < maxAttempts)
-                {
-                    ResetToStart();
-                    yield return new WaitForSeconds(0.5f);
-                    continue;
-                }
-                else
-                {
-                    Debug.Log("AI: 最大試行回数に達しました");
-                    yield break; // ループ終了
-                }
-            }
-
-            // 行動決定と移動
-            if (!isMoving)
-            {
-                int chosenAction = DecideAction();
-                Vector3 moveDir = ActionToVector(chosenAction);
-                Vector3 targetPos = new Vector3(
-                    Mathf.Round(transform.position.x) + moveDir.x,
-                    transform.position.y,
-                    Mathf.Round(transform.position.z) + moveDir.z
-                );
-                StartCoroutine(MoveToPos(targetPos, chosenAction));
-                currentStep++;
-            }
-
-            yield return new WaitForSeconds(thinkInterval);
-        }
-    }
-
-    /// <summary>
-    /// 行動決定メイン処理（ハイブリッドアプローチ）
-    /// 優先順位: 1. BC Policy → 2. 報酬勾配 → 3. ランダム
-    /// </summary>
-    private int DecideAction()
-    {
-        int px = (int)Mathf.Round(transform.position.x);
-        int py = (int)Mathf.Round(transform.position.z);
-
-        // 現在の状態キーを構築
-        string stateKey = BuildStateKey(px, py);
-
-        // 思考プロセス情報を構築
-        string thinkInfo = BuildThinkingInfo(px, py, stateKey);
-
-        // 優先順位1: BC Policy（確率分布サンプリング）
-        if (bcPolicy != null && bcPolicy.ContainsKey(stateKey))
-        {
-            int action = SampleFromBCPolicy(stateKey, out string bcInfo);
-            thinkInfo += bcInfo;
-            thinkInfo += $"\n✅ 選択: BC Policy から action={action} ({GetActionName(action)})";
-
-            UpdateThinkingUI(thinkInfo);
-            Debug.Log($"AI思考: BC Policy選択 action={action}");
-            return action;
-        }
-
-        // 優先順位2: 報酬勾配参照（未知状態の場合）
-        if (rewardGradient != null && rewardGradient.Count > 0)
-        {
-            int action = SelectActionByRewardGradient(px, py, out string rgInfo);
-            if (action > 0)
-            {
-                thinkInfo += rgInfo;
-                thinkInfo += $"\n✅ 選択: 報酬勾配参照 action={action} ({GetActionName(action)})";
-
-                UpdateThinkingUI(thinkInfo);
-                Debug.Log($"AI思考: 報酬勾配選択 action={action}");
-                return action;
-            }
-        }
-
-        // 優先順位3: 完全未知状態 → ランダム行動
-        int randomAction = UnityEngine.Random.Range(1, 5);
-        thinkInfo += "\n⚠️ 完全未知状態（BC/報酬勾配なし）";
-        thinkInfo += $"\n✅ 選択: ランダム action={randomAction} ({GetActionName(randomAction)})";
-
-        UpdateThinkingUI(thinkInfo);
-        Debug.Log($"AI思考: ランダム選択 action={randomAction}");
-        return randomAction;
-    }
-
-    /// <summary>
-    /// 思考プロセス情報を構築
-    /// </summary>
-    private string BuildThinkingInfo(int px, int py, string stateKey)
-    {
-        int env = GetEnvType(px, py);
-        int envUp = GetEnvType(px, py + 1);
-        int envDown = GetEnvType(px, py - 1);
-        int envRight = GetEnvType(px + 1, py);
-        int envLeft = GetEnvType(px - 1, py);
-
-        string info = $"━━━ ステップ {currentStep} ━━━\n";
-        info += $"📍 位置: ({px}, {py})\n";
-        info += $"🌍 環境: 現在={GetEnvName(env)} 上={GetEnvName(envUp)} 下={GetEnvName(envDown)} 右={GetEnvName(envRight)} 左={GetEnvName(envLeft)}\n";
-        info += $"🔑 状態キー: {stateKey}\n";
-
-        // ゴール座標情報
-        if (goalPositions != null && goalPositions.Count > 0)
-        {
-            var topGoal = goalPositions.OrderByDescending(kv => kv.Value).First();
-            info += $"🎯 推定ゴール: {topGoal.Key} (出現{topGoal.Value}回)\n";
-        }
-
-        return info;
-    }
-
-    /// <summary>
-    /// BC Policyから確率的にサンプリング（温度パラメータ付き）
-    /// </summary>
-    private int SampleFromBCPolicy(string stateKey, out string info)
-    {
-        Dictionary<string, int> actionCounts = bcPolicy[stateKey];
-
-        // 温度パラメータ付きソフトマックスで確率を計算
-        Dictionary<int, float> probs = new Dictionary<int, float>();
-
-        info = "📊 BC Policy 確率分布:\n";
-
-        float sumExp = 0f;
-        for (int a = 1; a <= 4; a++)
-        {
-            int count = actionCounts.ContainsKey(a.ToString()) ? actionCounts[a.ToString()] : 0;
-            float exp = Mathf.Exp(count / temperature);
-            sumExp += exp;
-            probs[a] = exp;
-        }
-
-        // 正規化
-        for (int a = 1; a <= 4; a++)
-        {
-            probs[a] /= sumExp;
-            int count = actionCounts.ContainsKey(a.ToString()) ? actionCounts[a.ToString()] : 0;
-            info += $"  {GetActionName(a)}: 出現{count}回 → 確率{probs[a] * 100:F1}%\n";
-        }
-
-        // ルーレット選択
-        float rand = UnityEngine.Random.Range(0f, 1f);
-        float cumulative = 0f;
-
-        for (int a = 1; a <= 4; a++)
-        {
-            cumulative += probs[a];
-            if (rand <= cumulative)
-            {
-                return a;
-            }
-        }
-
-        return 1; // フォールバック
-    }
-
-    /// <summary>
-    /// 報酬勾配を参照して行動選択（各方向の次状態の報酬を比較）
-    /// </summary>
-    private int SelectActionByRewardGradient(int px, int py, out string info)
-    {
-        info = "📈 報酬勾配による評価:\n";
-
-        Dictionary<int, float> actionRewards = new Dictionary<int, float>();
-
-        for (int a = 1; a <= 4; a++)
-        {
-            Vector2Int nextPos = GetNextPosition(px, py, a);
-            string nextStateKey = BuildStateKey(nextPos.x, nextPos.y);
-
-            float reward = 0f;
-            bool found = false;
-
-            if (rewardGradient != null && rewardGradient.ContainsKey(nextStateKey))
-            {
-                reward = rewardGradient[nextStateKey].avg;
-                found = true;
-            }
-
-            actionRewards[a] = reward;
-            string status = found ? $"{reward:F2}" : "不明";
-            info += $"  {GetActionName(a)}: 平均報酬={status}\n";
-        }
-
-        // 有効なデータがあるか確認
-        bool hasValidData = actionRewards.Values.Any(r => r != 0f);
-        if (!hasValidData)
-        {
-            return -1; // ランダムにフォールバック
-        }
-
-        // 最も報酬が高い方向を選択
-        int bestAction = actionRewards.OrderByDescending(kv => kv.Value).First().Key;
         return bestAction;
     }
 
     /// <summary>
-    /// 次の位置を取得
+    /// ランダムフォレスト：複数の決定木の平均スコアを計算
     /// </summary>
-    private Vector2Int GetNextPosition(int x, int y, int action)
+    private float[] CalculateRandomForestScores(int px, int pz, int envUp, int envDown, int envRight, int envLeft)
     {
-        switch (action)
+        float[] avgScores = new float[5];
+
+        for (int treeIdx = 0; treeIdx < numDecisionTrees; treeIdx++)
         {
-            case 1: return new Vector2Int(x, y + 1);      // 上
-            case 2: return new Vector2Int(x + 1, y);      // 右
-            case 3: return new Vector2Int(x, y - 1);      // 下
-            case 4: return new Vector2Int(x - 1, y);      // 左
-            default: return new Vector2Int(x, y);
+            float noise = treeNoiseFactors[treeIdx];
+            
+            // 各方向のスコアを計算（ノイズ付き）
+            avgScores[1] += CalculateDirectionScore(1, px, pz + 1, envUp, noise);
+            avgScores[2] += CalculateDirectionScore(2, px + 1, pz, envRight, noise);
+            avgScores[3] += CalculateDirectionScore(3, px, pz - 1, envDown, noise);
+            avgScores[4] += CalculateDirectionScore(4, px - 1, pz, envLeft, noise);
+        }
+
+        // 平均化
+        for (int action = 1; action <= 4; action++)
+        {
+            avgScores[action] /= numDecisionTrees;
+        }
+
+        return avgScores;
+    }
+
+    /// <summary>
+    /// 行動クローニング（BC）からスコアを計算
+    /// </summary>
+    private float[] CalculateBCScores(int envUp, int envDown, int envRight, int envLeft)
+    {
+        float[] scores = new float[5];
+        string bcKey = BuildBCKey(envUp, envDown, envRight, envLeft);
+
+        if (bcPolicyTable.TryGetValue(bcKey, out BCPolicy policy))
+        {
+            // サンプル数による信頼度調整
+            float confidence = Mathf.Clamp01(policy.samples / 50f);
+            float baseScore = 50f; // BCスコアの基準値
+
+            scores[1] = policy.up * baseScore * confidence;
+            scores[2] = policy.right * baseScore * confidence;
+            scores[3] = policy.down * baseScore * confidence;
+            scores[4] = policy.left * baseScore * confidence;
+        }
+        else
+        {
+            // BCに該当エントリがない場合は均等
+            for (int i = 1; i <= 4; i++) scores[i] = 12.5f;
+        }
+
+        return scores;
+    }
+
+    /// <summary>
+    /// 各方向のスコアを計算（単一決定木）
+    /// </summary>
+    private float CalculateDirectionScore(int action, int targetX, int targetZ, int targetEnv, float noise = 0f)
+    {
+        float score = 0f;
+
+        // 1. タイル種別によるベーススコア
+        if (tileScores.TryGetValue(targetEnv, out int tileScore))
+        {
+            score += tileScore * (1f + noise * 0.2f); // ノイズ適用
+        }
+
+        // 2. 穴回避（holeFearIndex適用）
+        if (targetEnv == 0)
+        {
+            score += holeFearIndex * 20f * (1f + noise);
+        }
+
+        // 3. 罠への積極性/回避性
+        if (targetEnv == 3)
+        {
+            score += trapInterest * 10f * (1f + noise * 0.5f);
+        }
+
+        // 4. ゴール方向ボーナス（ゴール座標が既知の場合）
+        if (goalKnown && estimatedGoal.x >= 0)
+        {
+            Vector2Int current = new Vector2Int((int)transform.position.x, (int)Mathf.Round(transform.position.z));
+            int dx = estimatedGoal.x - current.x;
+            int dy = estimatedGoal.y - current.y;
+
+            // 行動がゴール方向かどうか
+            bool isGoalDirection = false;
+            if (action == 1 && dy > 0) isGoalDirection = true;      // 上
+            if (action == 3 && dy < 0) isGoalDirection = true;      // 下
+            if (action == 2 && dx > 0) isGoalDirection = true;      // 右
+            if (action == 4 && dx < 0) isGoalDirection = true;      // 左
+
+            if (isGoalDirection)
+            {
+                score += goalDirectionBonus * goalBias * goalApproachRate;
+            }
+        }
+
+        // 5. 訪問済みペナルティ
+        Vector2Int targetTile = new Vector2Int(targetX, targetZ);
+        if (visitedTiles.TryGetValue(targetTile, out int visitCount))
+        {
+            score += revisitPenalty * visitCount * (1f + noise * 0.3f);
+        }
+        else
+        {
+            // 未訪問ボーナス
+            score += unexploredBonus;
+        }
+
+        // 6. 危険地帯ペナルティ
+        if (dangerZones.Contains(targetTile))
+        {
+            score -= 30f * (1f + noise * 0.5f);
+        }
+
+        return score;
+    }
+
+    /// <summary>
+    /// 最高スコアの行動を選択（同点時はランダム）
+    /// </summary>
+    private int SelectBestAction(float[] scores)
+    {
+        float maxScore = float.MinValue;
+        List<int> bestActions = new List<int>();
+
+        for (int action = 1; action <= 4; action++)
+        {
+            if (scores[action] > maxScore)
+            {
+                maxScore = scores[action];
+                bestActions.Clear();
+                bestActions.Add(action);
+            }
+            else if (Mathf.Approximately(scores[action], maxScore))
+            {
+                bestActions.Add(action);
+            }
+        }
+
+        // 同点の場合はランダム選択
+        return bestActions[UnityEngine.Random.Range(0, bestActions.Count)];
+    }
+
+    /// <summary>
+    /// BCテーブル用キーを生成（周囲4マスの状態）
+    /// </summary>
+    private string BuildBCKey(int up, int down, int right, int left)
+    {
+        return $"{up},{down},{right},{left}";
+    }
+
+    /// <summary>
+    /// 行動から移動先座標を取得
+    /// </summary>
+    private Vector2Int GetTargetTile(int x, int z, int action)
+    {
+        return action switch
+        {
+            1 => new Vector2Int(x, z + 1),
+            2 => new Vector2Int(x + 1, z),
+            3 => new Vector2Int(x, z - 1),
+            4 => new Vector2Int(x - 1, z),
+            _ => new Vector2Int(x, z)
+        };
+    }
+
+    /// <summary>
+    /// 思考過程をUI表示用にフォーマット
+    /// </summary>
+    private string BuildThinkingInfo(int px, int pz, int up, int down, int right, int left, 
+                                      float[] treeScores, float[] bcScores, float[] finalScores, int action)
+    {
+        string goalInfo = goalKnown ? $"({estimatedGoal.x},{estimatedGoal.y})" : "不明";
+        string modelInfo = modelLoaded ? $"BC:{bcPolicyTable.Count}状態" : "モデル未読込";
+        
+        return $"[Step {currentStep}] 位置:({px},{pz}) {modelInfo}\n" +
+               $"周囲: ↑{up} ↓{down} →{right} ←{left}\n" +
+               $"決定木: ↑{treeScores[1]:F0} ↓{treeScores[3]:F0} →{treeScores[2]:F0} ←{treeScores[4]:F0}\n" +
+               $"BC: ↑{bcScores[1]:F0} ↓{bcScores[3]:F0} →{bcScores[2]:F0} ←{bcScores[4]:F0}\n" +
+               $"統合: ↑{finalScores[1]:F0} ↓{finalScores[3]:F0} →{finalScores[2]:F0} ←{finalScores[4]:F0}\n" +
+               $"ゴール:{goalInfo} 重み:BC={bcWeight:F1} → {GetActionName(action)}";
+    }
+
+    /// <summary>
+    /// 学習済みJSONファイルの読み込み（model_data.json + parameters.json）
+    /// </summary>
+    private void LoadAIModels()
+    {
+        string aiDir = Path.Combine(Application.dataPath, "DemoAIs");
+        string modelPath = Path.Combine(aiDir, "model_data.json");
+        string paramPath = Path.Combine(aiDir, "parameters.json");
+        
+        Debug.Log($"=== AIモデル読み込み開始 ===");
+        Debug.Log($"  model_data.json: {modelPath}");
+        Debug.Log($"  parameters.json: {paramPath}");
+
+        // 1. model_data.json の読み込み
+        if (File.Exists(modelPath))
+        {
+            try
+            {
+                string json = File.ReadAllText(modelPath);
+                ParseModelData(json);
+                modelLoaded = true;
+                Debug.Log($"  model_data.json 読み込み完了");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"  model_data.json 読み込みエラー: {e.Message}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("  model_data.json が見つかりません。デフォルト設定で動作します。");
+        }
+
+        // 2. parameters.json の読み込み（人間可読パラメータ）
+        if (File.Exists(paramPath))
+        {
+            try
+            {
+                string json = File.ReadAllText(paramPath);
+                ParseParameters(json);
+                Debug.Log($"  parameters.json 読み込み完了");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"  parameters.json 読み込みエラー: {e.Message}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("  parameters.json が見つかりません。");
+        }
+
+        // 読み込み結果のサマリー
+        Debug.Log($"=== AIモデル読み込み完了 ===");
+        Debug.Log($"  ゴール既知: {goalKnown} → ({estimatedGoal.x},{estimatedGoal.y})");
+        Debug.Log($"  BC状態数: {bcPolicyTable.Count}");
+        Debug.Log($"  危険地帯: {dangerZones.Count}箇所");
+        Debug.Log($"  穴回避指数: {holeFearIndex:F2}");
+        Debug.Log($"  罠への積極性: {trapInterest:F2}");
+        Debug.Log($"  ゴール優先度: {goalBias:F2}");
+    }
+
+    /// <summary>
+    /// parameters.json をパース
+    /// </summary>
+    private void ParseParameters(string json)
+    {
+        // estimated_goal（文字列形式 "x,y"）
+        int goalIdx = json.IndexOf("\"estimated_goal\":");
+        if (goalIdx >= 0)
+        {
+            int valueStart = json.IndexOf("\"", goalIdx + 17) + 1;
+            int valueEnd = json.IndexOf("\"", valueStart);
+            if (valueStart > 0 && valueEnd > valueStart)
+            {
+                string goalStr = json.Substring(valueStart, valueEnd - valueStart);
+                if (goalStr != "unknown" && goalStr.Contains(","))
+                {
+                    string[] parts = goalStr.Split(',');
+                    if (parts.Length == 2 && 
+                        int.TryParse(parts[0], out int gx) && 
+                        int.TryParse(parts[1], out int gy))
+                    {
+                        estimatedGoal = new Vector2Int(gx, gy);
+                        goalKnown = true;
+                    }
+                }
+            }
+        }
+
+        // hole_fear_index
+        int holeIdx = json.IndexOf("\"hole_fear_index\":");
+        if (holeIdx >= 0) holeFearIndex = ParseFloatValue(json, holeIdx + 18);
+
+        // trap_interest
+        int trapIdx = json.IndexOf("\"trap_interest\":");
+        if (trapIdx >= 0) trapInterest = ParseFloatValue(json, trapIdx + 16);
+
+        // goal_bias
+        int biasIdx = json.IndexOf("\"goal_bias\":");
+        if (biasIdx >= 0) goalBias = ParseFloatValue(json, biasIdx + 12);
+
+        // statistics から追加情報を取得
+        int statsIdx = json.IndexOf("\"statistics\"");
+        if (statsIdx >= 0)
+        {
+            int bcStatesIdx = json.IndexOf("\"bc_states\":", statsIdx);
+            int dangerIdx = json.IndexOf("\"danger_zones\":", statsIdx);
+            
+            if (bcStatesIdx >= 0) bcStatesCount = ParseIntValue(json, bcStatesIdx + 12);
+            if (dangerIdx >= 0) dangerZonesCount = ParseIntValue(json, dangerIdx + 15);
         }
     }
 
     /// <summary>
-    /// 状態キー構築（環境パターンのみ、座標非依存）
-    /// train.pyのencode_state_env_onlyと一致
+    /// JSONを手動パース（Unity Sentis非使用）
     /// </summary>
-    private string BuildStateKey(int x, int y)
+    private void ParseModelData(string json)
     {
-        int env = GetEnvType(x, y);
-        int up = GetEnvType(x, y + 1);
-        int down = GetEnvType(x, y - 1);
-        int right = GetEnvType(x + 1, y);
-        int left = GetEnvType(x - 1, y);
-
-        return $"({env}, {up}, {down}, {right}, {left})";
-    }
-
-    /// <summary>
-    /// 環境タイプを取得
-    /// </summary>
-    private int GetEnvType(int x, int z)
-    {
-        if (stageManager == null) return 0;
-        return stageManager.GetTileState(x, z);
-    }
-
-    /// <summary>
-    /// 行動番号をベクトルに変換
-    /// </summary>
-    private Vector3 ActionToVector(int action)
-    {
-        switch (action)
+        // シンプルなJSON手動パース（Newtonsoft.Json非依存版）
+        // 注: より堅牢なパースが必要な場合はJsonUtilityやカスタムパーサーを使用
+        
+        // estimated_goal のパース
+        int goalStart = json.IndexOf("\"estimated_goal\"");
+        if (goalStart >= 0)
         {
-            case 1: return new Vector3(0, 0, 1);   // 上
-            case 2: return new Vector3(1, 0, 0);   // 右
-            case 3: return new Vector3(0, 0, -1);  // 下
-            case 4: return new Vector3(-1, 0, 0);  // 左
-            default: return Vector3.zero;
+            int xStart = json.IndexOf("\"x\":", goalStart);
+            int yStart = json.IndexOf("\"y\":", goalStart);
+            int knownStart = json.IndexOf("\"known\":", goalStart);
+            
+            if (xStart >= 0 && yStart >= 0)
+            {
+                estimatedGoal.x = ParseIntValue(json, xStart + 4);
+                estimatedGoal.y = ParseIntValue(json, yStart + 4);
+            }
+            if (knownStart >= 0)
+            {
+                goalKnown = json.Substring(knownStart + 8, 5).Contains("true");
+            }
+        }
+
+        // decision_weights のパース
+        int weightsStart = json.IndexOf("\"decision_weights\"");
+        if (weightsStart >= 0)
+        {
+            int holeIdx = json.IndexOf("\"hole_fear_index\":", weightsStart);
+            int trapIdx = json.IndexOf("\"trap_interest\":", weightsStart);
+            int goalIdx = json.IndexOf("\"goal_bias\":", weightsStart);
+            
+            if (holeIdx >= 0) holeFearIndex = ParseFloatValue(json, holeIdx + 18);
+            if (trapIdx >= 0) trapInterest = ParseFloatValue(json, trapIdx + 16);
+            if (goalIdx >= 0) goalBias = ParseFloatValue(json, goalIdx + 12);
+        }
+
+        // bc_policy のパース
+        int bcStart = json.IndexOf("\"bc_policy\"");
+        if (bcStart >= 0)
+        {
+            int bcEnd = FindMatchingBrace(json, json.IndexOf("{", bcStart));
+            string bcSection = json.Substring(bcStart, bcEnd - bcStart + 1);
+            ParseBCPolicy(bcSection);
+        }
+
+        // danger_zones のパース
+        int dangerStart = json.IndexOf("\"danger_zones\"");
+        if (dangerStart >= 0)
+        {
+            int arrStart = json.IndexOf("[", dangerStart);
+            int arrEnd = json.IndexOf("]", arrStart);
+            if (arrStart >= 0 && arrEnd >= 0)
+            {
+                string dangerSection = json.Substring(arrStart, arrEnd - arrStart + 1);
+                ParseDangerZones(dangerSection);
+            }
+        }
+
+        // direction_scores のパース
+        int scoresStart = json.IndexOf("\"direction_scores\"");
+        if (scoresStart >= 0)
+        {
+            int bonusIdx = json.IndexOf("\"goal_direction_bonus\":", scoresStart);
+            int revisitIdx = json.IndexOf("\"revisit_penalty\":", scoresStart);
+            int unexploredIdx = json.IndexOf("\"unexplored_bonus\":", scoresStart);
+            
+            if (bonusIdx >= 0) goalDirectionBonus = ParseIntValue(json, bonusIdx + 23);
+            if (revisitIdx >= 0) revisitPenalty = ParseIntValue(json, revisitIdx + 18);
+            if (unexploredIdx >= 0) unexploredBonus = ParseIntValue(json, unexploredIdx + 19);
+            
+            // tile_scores のパース
+            int tileScoresStart = json.IndexOf("\"tile_scores\":", scoresStart);
+            if (tileScoresStart >= 0)
+            {
+                int holeScore = json.IndexOf("\"hole\":", tileScoresStart);
+                int flatScore = json.IndexOf("\"flat\":", tileScoresStart);
+                int goalScore = json.IndexOf("\"goal\":", tileScoresStart);
+                int trapScore = json.IndexOf("\"trap\":", tileScoresStart);
+                
+                if (holeScore >= 0) tileScores[0] = ParseIntValue(json, holeScore + 7);
+                if (flatScore >= 0) tileScores[1] = ParseIntValue(json, flatScore + 7);
+                if (goalScore >= 0) tileScores[2] = ParseIntValue(json, goalScore + 7);
+                if (trapScore >= 0) tileScores[3] = ParseIntValue(json, trapScore + 7);
+            }
         }
     }
 
-    /// <summary>
-    /// 行動名を取得
-    /// </summary>
-    private string GetActionName(int action)
+    private int ParseIntValue(string json, int startIdx)
     {
-        switch (action)
+        int endIdx = startIdx;
+        while (endIdx < json.Length && (char.IsDigit(json[endIdx]) || json[endIdx] == '-' || json[endIdx] == ' '))
+            endIdx++;
+        string numStr = json.Substring(startIdx, endIdx - startIdx).Trim();
+        return int.TryParse(numStr, out int val) ? val : 0;
+    }
+
+    private float ParseFloatValue(string json, int startIdx)
+    {
+        int endIdx = startIdx;
+        while (endIdx < json.Length && (char.IsDigit(json[endIdx]) || json[endIdx] == '-' || json[endIdx] == '.' || json[endIdx] == ' '))
+            endIdx++;
+        string numStr = json.Substring(startIdx, endIdx - startIdx).Trim();
+        return float.TryParse(numStr, out float val) ? val : 0f;
+    }
+
+    private int FindMatchingBrace(string json, int openIdx)
+    {
+        int depth = 1;
+        for (int i = openIdx + 1; i < json.Length; i++)
         {
-            case 1: return "上↑";
-            case 2: return "右→";
-            case 3: return "下↓";
-            case 4: return "左←";
-            default: return "不明";
+            if (json[i] == '{') depth++;
+            else if (json[i] == '}') depth--;
+            if (depth == 0) return i;
+        }
+        return json.Length - 1;
+    }
+
+    private void ParseBCPolicy(string bcSection)
+    {
+        // "1,1,1,1": {"up": 0.25, "right": 0.25, ...} 形式をパース
+        int idx = 0;
+        while ((idx = bcSection.IndexOf("\":", idx)) >= 0)
+        {
+            // キーを見つける
+            int keyEnd = idx;
+            int keyStart = bcSection.LastIndexOf("\"", keyEnd - 1);
+            if (keyStart < 0) { idx++; continue; }
+            
+            string key = bcSection.Substring(keyStart + 1, keyEnd - keyStart - 1);
+            
+            // 数字のカンマ区切りかチェック（例: "1,1,1,1"）
+            if (!key.Contains(",")) { idx++; continue; }
+            
+            // 値オブジェクトを見つける
+            int objStart = bcSection.IndexOf("{", idx);
+            if (objStart < 0 || objStart > idx + 5) { idx++; continue; }
+            
+            int objEnd = FindMatchingBrace(bcSection, objStart);
+            string objStr = bcSection.Substring(objStart, objEnd - objStart + 1);
+            
+            BCPolicy policy = new BCPolicy();
+            int upIdx = objStr.IndexOf("\"up\":");
+            int rightIdx = objStr.IndexOf("\"right\":");
+            int downIdx = objStr.IndexOf("\"down\":");
+            int leftIdx = objStr.IndexOf("\"left\":");
+            int samplesIdx = objStr.IndexOf("\"samples\":");
+            
+            if (upIdx >= 0) policy.up = ParseFloatValue(objStr, upIdx + 5);
+            if (rightIdx >= 0) policy.right = ParseFloatValue(objStr, rightIdx + 8);
+            if (downIdx >= 0) policy.down = ParseFloatValue(objStr, downIdx + 7);
+            if (leftIdx >= 0) policy.left = ParseFloatValue(objStr, leftIdx + 7);
+            if (samplesIdx >= 0) policy.samples = ParseIntValue(objStr, samplesIdx + 10);
+            
+            bcPolicyTable[key] = policy;
+            idx = objEnd;
         }
     }
 
-    /// <summary>
-    /// 環境タイプ名を取得
-    /// </summary>
-    private string GetEnvName(int env)
+    private void ParseDangerZones(string dangerSection)
     {
-        switch (env)
+        // [{"x": 1, "y": 2}, ...] 形式をパース
+        int idx = 0;
+        while ((idx = dangerSection.IndexOf("{", idx)) >= 0)
         {
-            case 0: return "穴";
-            case 1: return "床";
-            case 2: return "G";
-            case 3: return "罠";
-            default: return "?";
+            int objEnd = dangerSection.IndexOf("}", idx);
+            if (objEnd < 0) break;
+            
+            string objStr = dangerSection.Substring(idx, objEnd - idx + 1);
+            int xIdx = objStr.IndexOf("\"x\":");
+            int yIdx = objStr.IndexOf("\"y\":");
+            
+            if (xIdx >= 0 && yIdx >= 0)
+            {
+                int x = ParseIntValue(objStr, xIdx + 4);
+                int y = ParseIntValue(objStr, yIdx + 4);
+                dangerZones.Add(new Vector2Int(x, y));
+            }
+            idx = objEnd + 1;
         }
     }
 
-    /// <summary>
-    /// 移動処理（movP.csのMoveToPos()と同じ実装）
-    /// </summary>
-    private IEnumerator MoveToPos(Vector3 targetPos, int action)
+    #endregion
+
+    #region 3. 移動・物理挙動（基本変更不要）
+
+    private IEnumerator MoveProcess(int action)
     {
         isMoving = true;
+        currentStep++;
 
-        // 回転処理（movP.csと同じ）
-        int rotate = 0;
-        switch (action)
+        Vector3 moveDir = ActionToVector(action);
+        Vector3 targetPos = GetRoundedPos() + moveDir;
+
+        // A. 回転
+        float angle = (action == 1) ? 0 : (action == 2) ? 90 : (action == 3) ? 180 : -90;
+        transform.rotation = Quaternion.Euler(0, angle, 0);
+
+        // B. 移動アニメーション
+        float duration = 0.25f;
+        float elapsed = 0f;
+        Vector3 startPos = transform.position;
+        while (elapsed < duration)
         {
-            case 1: rotate = 0; break;      // 上
-            case 2: rotate = 90; break;     // 右
-            case 3: rotate = 180; break;    // 下
-            case 4: rotate = -90; break;    // 左
-        }
-        transform.rotation = Quaternion.Euler(0, rotate, 0);
-
-        // 移動アニメーション（movP.csと同じ0.2秒）
-        float elapsedTime = 0f;
-        Vector3 startPosMove = transform.position;
-
-        while (elapsedTime < 0.2f)
-        {
-            transform.position = Vector3.Lerp(startPosMove, targetPos, elapsedTime / 0.2f);
-            elapsedTime += Time.deltaTime;
+            transform.position = Vector3.Lerp(startPos, targetPos, elapsed / duration);
+            elapsed += Time.deltaTime;
             yield return null;
         }
-
         transform.position = targetPos;
 
-        // 環境チェック
-        int envValue = GetEnvType((int)targetPos.x, (int)targetPos.z);
+        // C. 移動後のイベント処理
+        int env = GetEnvType((int)targetPos.x, (int)targetPos.z);
+        if (stageManager != null) stageManager.SendMessage("MatsChange", targetPos, SendMessageOptions.DontRequireReceiver);
 
-        // ステージマネージャーに移動を通知（色変更など）
-        if (stageManager != null)
+        if (env == 3) // 罠
         {
-            stageManager.SendMessage("MatsChange", targetPos, SendMessageOptions.DontRequireReceiver);
+            yield return StartCoroutine(HandleTrap());
         }
-
-        if (envValue == 2)
+        else if (env == 0)
         {
-            // ゴール到達
-            Debug.Log($"AI: ゴール到達 pos=({targetPos.x},{targetPos.z})");
-        }
-        else if (envValue == 0)
-        {
-            // 落下
-            Debug.Log($"AI: 落下 pos=({targetPos.x},{targetPos.z})");
             rb.isKinematic = false;
-        }
-        else if (envValue == 3)
-        {
-            // トラップ処理（movP.csのTrapped()と同じ）
-            yield return StartCoroutine(HandleTrap(targetPos));
+            yield return new WaitForSeconds(3.0f);
         }
 
         isMoving = false;
     }
 
-    /// <summary>
-    /// トラップ処理（movP.csのTrapped()と同じ実装）
-    /// </summary>
-    private IEnumerator HandleTrap(Vector3 trapPos)
+    private IEnumerator HandleTrap()
     {
-        // 移動距離をランダムに決定 (2～4マス)
-        int moveDistance = UnityEngine.Random.Range(2, 5);
+        UpdateThinkingUI("⚠️ 罠発動！ランダム移動中...");
+        int dist = UnityEngine.Random.Range(2, 5);
+        Vector3[] dirs = { Vector3.forward, Vector3.right, Vector3.back, Vector3.left };
+        Vector3 jumpDir = dirs[UnityEngine.Random.Range(0, 4)];
+        
+        Vector3 start = transform.position;
+        Vector3 end = start + jumpDir * dist;
 
-        // 移動方向をランダムに決定 (上下左右)
-        Vector3[] directions = {
-            new Vector3(0, 0, 1),   // 上:1
-            new Vector3(1, 0, 0),   // 右:2
-            new Vector3(0, 0, -1),  // 下:3
-            new Vector3(-1, 0, 0)   // 左:4
-        };
-        int dirIndex = UnityEngine.Random.Range(0, directions.Length);
-        Vector3 direction = directions[dirIndex];
-
-        // 移動先のターゲット位置を計算
-        Vector3 startPosT = transform.position;
-        Vector3 targetPosT = startPosT + direction * moveDistance;
-
-        // 放物線の高さを設定
-        float arcHeight = 2.0f;
-        float moveDuration = 1.0f;
-        float elapsedTime = 0;
-
-        // 放物線を描きながら移動
-        while (elapsedTime < moveDuration)
+        float duration = 1.0f;
+        float elapsed = 0f;
+        while (elapsed < duration)
         {
-            elapsedTime += Time.deltaTime;
-            float t = elapsedTime / moveDuration;
-
-            // 線形補間で XZ 平面の位置を計算
-            Vector3 flatPos = Vector3.Lerp(startPosT, targetPosT, t);
-
-            // 放物線の高さを計算
-            float height = Mathf.Sin(t * Mathf.PI) * arcHeight;
-
-            // 新しい位置を設定
-            transform.position = new Vector3(flatPos.x, startPosT.y + height, flatPos.z);
-
+            elapsed += Time.deltaTime;
+            float t = elapsed / duration;
+            Vector3 flatPos = Vector3.Lerp(start, end, t);
+            float height = Mathf.Sin(t * Mathf.PI) * 2.0f;
+            transform.position = new Vector3(flatPos.x, start.y + height, flatPos.z);
             yield return null;
         }
+        transform.position = end;
 
-        // 最終的な位置をターゲット位置に設定
-        transform.position = targetPosT;
-
-        int envValue = GetEnvType((int)targetPosT.x, (int)targetPosT.z);
-
-        // ステージマネージャーに移動を通知
-        if (stageManager != null)
-        {
-            stageManager.SendMessage("MatsChange", targetPosT, SendMessageOptions.DontRequireReceiver);
-        }
-
-        Debug.Log($"AI: トラップ後着地 pos=({targetPosT.x},{targetPosT.z}) env={envValue}");
-
-        if (envValue == 2)
-        {
-            // ゴール到達
-            Debug.Log("AI: トラップからのゴール到達");
-        }
-        else if (envValue == 0)
-        {
-            // 落下
-            Debug.Log("AI: トラップから落下");
+        int env = GetEnvType((int)end.x, (int)end.z);
+        if (env == 0) {
             rb.isKinematic = false;
+            yield return new WaitForSeconds(3.0f);
         }
-        else if (envValue == 3)
+        if (env == 3) yield return StartCoroutine(HandleTrap()); // 連続罠
+    }
+
+    #endregion
+
+    #region 4. システム・ユーティリティ（環境認識など）
+
+    private void ResetToStart()
+    {
+        attemptCount++;
+        currentStep = 0;
+        isMoving = false;
+        rb.isKinematic = true;
+        rb.linearVelocity = Vector3.zero;
+
+        // ステージ移動後は単純な座標計算
+        float randomX = Mathf.Round(UnityEngine.Random.Range(-2f, 2f));
+        transform.position = startBasePos + new Vector3(randomX, 0, 0);
+        transform.rotation = Quaternion.identity;
+
+        UpdateThinkingUI($"=== 試行 {attemptCount}/{maxAttempts} 開始 ===");
+    }
+
+    private bool IsEpisodeEnd(int env, out string reason)
+    {
+        reason = "";
+        if (env == 2) { reason = "Goal"; return true; }
+        if (env == 0) { reason = "Fall"; return true; }
+        if (currentStep > maxStepsPerEpisode) { reason = "Timeout"; return true; }
+        return false;
+    }
+
+    private IEnumerator HandleEpisodeEnd(string reason, int env)
+    {
+        if (reason == "Goal")
         {
-            // さらにトラップに踏み込んだ場合は再度実行
-            yield return StartCoroutine(HandleTrap(targetPosT));
+            UpdateThinkingUI("🎯 ゴール到達！");
+            if (GameController.instance != null) GameController.instance.OnAIGoal();
+            yield return new WaitForSeconds(1.5f);
+        }
+        else
+        {
+            UpdateThinkingUI($"💀 終了: {reason}");
+            if (GameController.instance != null) GameController.instance.OnAIFall();
+            yield return new WaitForSeconds(1.0f);
         }
     }
 
-    /// <summary>
-    /// 思考プロセスUIを更新
-    /// </summary>
+    private int GetEnvType(int x, int z) => stageManager ? stageManager.GetMTileState(x, z) : 0;
+
+    private Vector3 GetRoundedPos() => new Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));
+
+    private Vector3 ActionToVector(int action) => action == 1 ? Vector3.forward : action == 2 ? Vector3.right : action == 3 ? Vector3.back : action == 4 ? Vector3.left : Vector3.zero;
+
+    private string GetActionName(int action) => action == 1 ? "上" : action == 2 ? "右" : action == 3 ? "下" : action == 4 ? "左" : "不明";
+
     private void UpdateThinkingUI(string info)
     {
         currentThinkingInfo = info;
-
-        if (thinkingText != null)
-        {
-            thinkingText.text = info;
-        }
-
-        // デバッグログにも出力
-        Debug.Log($"[AI思考]\n{info}");
+        if (thinkingText != null) thinkingText.text = info;
     }
 
-    /// <summary>
-    /// 現在の思考情報を取得（外部参照用）
-    /// </summary>
-    public string GetCurrentThinkingInfo()
-    {
-        return currentThinkingInfo;
-    }
+    #endregion
 }

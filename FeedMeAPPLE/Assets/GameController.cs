@@ -37,11 +37,6 @@ public class GameController : MonoBehaviour
     /*private string pythonExePath = "/usr/bin/python3"; // 確認したPythonのフルパスを設定
     private string pythonScriptPath = "Assets/train.py"; // プロジェクトルートからのパス*/
     private bool isTraining = false;
-    private string aiModelPath;
-    // 新しいモデルファイル名（行動クローニングベース）
-    private string bcPolicyFile = "bc_policy.json";
-    private string rewardGradientFile = "reward_gradient.json";
-    private string goalPositionsFile = "goal_positions.json";
     void Awake()
     {
         // シングルトンインスタンスの設定
@@ -56,7 +51,6 @@ public class GameController : MonoBehaviour
     }
     void Start()
     {
-        aiModelPath = Path.Combine(Application.dataPath, "DemoAIs");
 
         trainButton.gameObject.SetActive(false);
         simulateButton.gameObject.SetActive(false);
@@ -103,7 +97,7 @@ public class GameController : MonoBehaviour
     {
         startGamen.gameObject.SetActive(false);
         startButton.gameObject.SetActive(false);
-        statusText.text = "デモプレイ中...";
+        statusText.text = "";
         demoPlayerObject.SendMessage("OnStartButton");
         stageManager.SendMessage("OnStartButton");
         kao.SendMessage("OnStart");
@@ -126,10 +120,27 @@ public class GameController : MonoBehaviour
 
         isTraining = true;
         trainButton.gameObject.SetActive(false);
-        statusText.text = "AI学習中... (完了まで数分待機)";
+        statusText.text = "AI学習中... (ステージ移動中)";
 
-        // Pythonスクリプトを非同期で実行するコルーチンを開始
-        StartCoroutine(RunPythonScript());
+        // 学習とステージ移動を並行実行
+        StartCoroutine(TrainAndMoveStage());
+    }
+
+    /// <summary>
+    /// 学習とステージ移動を並行実行
+    /// </summary>
+    IEnumerator TrainAndMoveStage()
+    {
+        // 1. ステージ移動コルーチンを開始（非同期）
+        Coroutine moveCoroutine = StartCoroutine(stageManager.MoveStageForAI());
+        
+        // 2. Python学習を開始（並行実行）
+        yield return StartCoroutine(RunPythonScript());
+        
+        // 3. ステージ移動の完了を待つ（まだ終わっていない場合）
+        yield return moveCoroutine;
+        
+        UnityEngine.Debug.Log("学習とステージ移動の両方が完了");
     }
 
     /// <summary>
@@ -139,7 +150,7 @@ public class GameController : MonoBehaviour
     {
         // Pythonスクリプトのフルパスを取得
         //string scriptFullPath = Path.Combine(Application.dataPath, "..", pythonScriptPath);
-        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainexxx");
+        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainex");
 
         // --- 1. Pythonプロセスを開始 ---
         ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -179,39 +190,17 @@ public class GameController : MonoBehaviour
         {
             // 学習成功
             UnityEngine.Debug.Log($"Python学習完了: {output}");
-            statusText.text = "学習完了。AIモデルをチェック中...";
+            statusText.text = "学習完了。シミュレーションボタンが有効になりました。";
+            
+            // simulateButtonをアクティブにして、ゲームを進められるようにする
+            simulateButton.gameObject.SetActive(true);
             
             // --- 3. JSONファイルの存在確認 ---
-            CheckForModelFiles();
+            //CheckForModelFiles();
         }
     }
 
-    /// <summary>
-    /// 学習完了後、DemoAIsフォルダにjsonファイルがあるか確認
-    /// </summary>
-    private void CheckForModelFiles()
-    {
-        string bcPolicyPath = Path.Combine(aiModelPath, bcPolicyFile);
-        string rewardGradientPath = Path.Combine(aiModelPath, rewardGradientFile);
-        string goalPositionsPath = Path.Combine(aiModelPath, goalPositionsFile);
-
-        // BC Policyは必須、他はオプション
-        if (File.Exists(bcPolicyPath))
-        {
-            // 成功: ファイル発見
-            string extraInfo = "";
-            if (File.Exists(rewardGradientPath)) extraInfo += " 報酬勾配✓";
-            if (File.Exists(goalPositionsPath)) extraInfo += " ゴール座標✓";
-            statusText.text = $"学習完了！BC Policy✓{extraInfo}\nシミュレーションを開始できます。";
-            simulateButton.gameObject.SetActive(true); // シミュレーションボタンを表示
-        }
-        else
-        {
-            // 失敗: ファイルが見つからない
-            UnityEngine.Debug.LogError("学習プロセスは成功しましたが、BC Policyファイルが見つかりません。");
-            statusText.text = "学習完了。しかしモデルファイルが見つかりません。";
-        }
-    }
+    
 
     /// <summary>
     /// (ステップ3) 「シミュレーション開始」ボタンに割り当てる

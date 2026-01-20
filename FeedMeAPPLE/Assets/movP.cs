@@ -22,6 +22,7 @@ public class movP : MonoBehaviour
     private const int rewardFALL = -500;
 
     private StageManager stageManager;
+    public GameObject mirrorHibi;
 
     private List<string> Plogs = new List<string>();
     private Rigidbody rb;
@@ -61,15 +62,15 @@ public class movP : MonoBehaviour
 
     private void SetPlayerActive(bool isActive)
     {
-        if (rend != null) rend.enabled = isActive;
-        if (pInput != null) pInput.enabled = isActive;
-        
         // 非アクティブ時は物理挙動も止めておく
         if (!isActive)
         {
             rb.isKinematic = true;
             rb.linearVelocity = UnityEngine.Vector3.zero;
         }
+
+        if (rend != null) rend.enabled = isActive;
+        if (pInput != null) pInput.enabled = isActive;
     }
 
     public void OnRestartButton()
@@ -119,7 +120,12 @@ public class movP : MonoBehaviour
     private void ResetStage()
     {
         if(!isGameActive) return;
-        transform.position = startPos;
+        float randomX = Mathf.Round(UnityEngine.Random.Range(-demoCount, demoCount));
+        transform.position = startPos + new UnityEngine.Vector3(randomX, 0, 0);
+        if(demoCount != 0)
+        {
+            getEnvType((int)transform.position.x, (int)transform.position.z);
+        }
         rb.linearVelocity = UnityEngine.Vector3.zero;
         rb.angularVelocity = UnityEngine.Vector3.zero;
         transform.rotation = UnityEngine.Quaternion.identity;
@@ -127,7 +133,7 @@ public class movP : MonoBehaviour
         demoCount++;
         pMCount = 0;
         Plogs.Clear();
-        if (demoCount > demoMaxCount) // 10回のデモが終了したら
+        if (demoCount > demoMaxCount) // 7回のデモが終了したら
         {
             // GameControllerに終了を通知
             if (GameController.instance != null)
@@ -261,6 +267,7 @@ public class movP : MonoBehaviour
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
             GetComponent<PlayerInput>().enabled = false;
+            Debug.Log("FALLlllllllllllllll");
             rb.isKinematic = false;
         }
         else if (envValue == 3)
@@ -392,6 +399,7 @@ public class movP : MonoBehaviour
         yield return new WaitForSeconds(1f);
         endLog();
         ResetStage();
+        mirrorHibi.SendMessage("AdvanceCrackStage");
     }
     
     //結果判定
