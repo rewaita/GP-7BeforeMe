@@ -48,6 +48,8 @@ public class StageManager : MonoBehaviour
         // 既存のステージ（ブロック）を削除
         NextStage();//ステージ削除
 
+        transform.position = Vector3.zero;
+        origin = new Vector3(0, 0, 0);
         GenerateStage();
         isStageGenerated = true;
     }
@@ -138,6 +140,7 @@ public class StageManager : MonoBehaviour
             for (int x = 0; x < width; x++)
             {
                 stageMap[x, z] = 2;
+                mStageMap[x, z] = 2;
             }
         }
         // ゴールオブジェクトの配置
@@ -179,7 +182,7 @@ public class StageManager : MonoBehaviour
                 Destroy(mirroredGoalBlock);
             }
             
-            mirroredGoalBlock = Instantiate(goalBlock, origin + new Vector3(width, 0, zMax), Quaternion.identity, transform);
+            mirroredGoalBlock = Instantiate(goalBlock, origin + new Vector3(width + 3, 0, zMax), Quaternion.identity, transform);
             mirroredGoalBlock.transform.localScale = new Vector3(width, 1, 3);
         }
     }
@@ -216,7 +219,7 @@ public class StageManager : MonoBehaviour
     void CarveComplexHoles(int width, int depth)
     {
         // ステージの密度調整（値が大きいほど穴だらけになる）
-        int holeAttempts = (int)(depth * 2.0f); 
+        int holeAttempts = (int)(depth * 2.5f); 
 
         for (int i = 0; i < holeAttempts; i++)
         {
@@ -419,7 +422,7 @@ public class StageManager : MonoBehaviour
 
             int mXi = (xMax - xMin) - xi;  // X軸対称
             mStageMap[mXi, zi] = stageMap[xi, zi];
-            int shiftedX = mXi + xMin + width;  // x方向にステージ幅分ずらす
+            int shiftedX = mXi + xMin + width + 3;  // x方向にステージ幅分ずらし、さらに3ブロック分右にずらす
             Vector3 mPos = origin + new Vector3(shiftedX, 0, zi + zMin);
             GameObject mBlock = Instantiate(blockPrefab, mPos, Quaternion.identity, transform);
             mBlock.GetComponent<Renderer>().material = new Material(floor1);
@@ -434,10 +437,10 @@ public class StageManager : MonoBehaviour
             GameObject block = Instantiate(tekiBlock, pos, Quaternion.identity, transform);
             copiedBlocks[xi, zi, 0] = block;
 
-            // 鏡ステージにも複製（x方向にステージ幅分ずらす）
+            // 鏡ステージにも複製（x方向にステージ幅分ずらし、さらに3ブロック分右にずらす）
             int mXi = (xMax - xMin) - xi;  // X軸対称
             mStageMap[mXi, zi] = stageMap[xi, zi];
-            int shiftedX = mXi + xMin + width;  // x方向にステージ幅分ずらす
+            int shiftedX = mXi + xMin + width + 3;  // x方向にステージ幅分ずらし、さらに3ブロック分右にずらす
             Vector3 mPos = origin + new Vector3(shiftedX, 0, zi + zMin);
             GameObject mBlock = Instantiate(tekiBlock, mPos, Quaternion.identity, transform);
             mCopiedBlocks[mXi, zi] = mBlock;
@@ -553,7 +556,7 @@ public class StageManager : MonoBehaviour
     public IEnumerator MoveStageForAI()
     {
         int width = xMax - xMin + 1;
-        float moveDistance = -width;
+        float moveDistance = -(width + 3);  // ステージ幅に加えて、3ブロック分の移動を加味
         
         Debug.Log($"=== AI用ステージ移動開始 ===");
         Debug.Log($"移動距離: x方向 {moveDistance}");

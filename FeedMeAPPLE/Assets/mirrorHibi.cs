@@ -30,14 +30,15 @@ public class MirrorHibi : MonoBehaviour
     /// ステージクリア時に呼び出してヒビを進行させる
     /// 次のテクスチャに切り替える
     /// </summary>
-    public void AdvanceCrackStage()
+    public void HibiChange()
     {
+        Debug.Log("HibiChangeメソッドが呼び出されました");
         currentStage++;
-
         // 配列の範囲内でテクスチャを切り替える
         if (currentStage < crackTextures.Length)
         {
             rawImage.texture = crackTextures[currentStage];
+            Debug.Log($"ミラーのヒビがステージ {currentStage} に進行しました");
         }
         else
         {

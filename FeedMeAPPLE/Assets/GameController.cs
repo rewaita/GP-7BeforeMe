@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO; // ファイルI/O (jsonの存在確認) のため
 using System.Collections;
 using System.Diagnostics.Contracts;
+using System.Threading;
+using System.Threading.Tasks;
 
 public class GameController : MonoBehaviour
 {
@@ -14,6 +16,8 @@ public class GameController : MonoBehaviour
     public Button simulateButton;
     public Button startButton;
     public Button restartButton;
+    public Button storyButton;
+    public Button ruleButton;
     public Text statusText;
 
     [Header("AI思考プロセス可視化")]
@@ -21,12 +25,16 @@ public class GameController : MonoBehaviour
     public Toggle aiThinkingToggle;
 
     public RawImage startGamen;
-    public RawImage clearGamen;
     public RawImage failGamen;
+    public RawImage storyGamen;
+    public RawImage ruleGamen;
+    public RawImage kuro;
+    public RawImage siro;
 
     public GameObject aiPlayerObject;
     public GameObject demoPlayerObject;//movP.cs
     public StageManager stageManager;
+    public moveCamera moveCamera;
     public kao kao;
 
     [Header("Python Settings")]
@@ -59,11 +67,16 @@ public class GameController : MonoBehaviour
         demoPlayerObject.SetActive(true);
 
         startGamen.gameObject.SetActive(true);
-        clearGamen.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
+        storyGamen.gameObject.SetActive(false);
+        ruleGamen.gameObject.SetActive(false);
+        kuro.gameObject.SetActive(false);
+        siro.gameObject.SetActive(false);
 
         statusText.text = "デモプレイを開始してください。";
         startButton.gameObject.SetActive(true);
+        storyButton.gameObject.SetActive(true);
+        ruleButton.gameObject.SetActive(true);
         restartButton.gameObject.SetActive(false);
 
         // AI思考プロセスUIの初期化
@@ -75,6 +88,30 @@ public class GameController : MonoBehaviour
         {
             aiThinkingToggle.gameObject.SetActive(false);
             aiThinkingToggle.onValueChanged.AddListener(OnThinkingToggleChanged);
+        }
+    }
+
+    /// <summary>
+    /// ボタンを下方向に移動する
+    /// </summary>
+    private void MoveButtonsDown()
+    {
+        float targetY = -480f;
+        
+        if (startButton != null)
+        {
+            RectTransform rect = startButton.GetComponent<RectTransform>();
+            if (rect != null) rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, targetY);
+        }
+        if (storyButton != null)
+        {
+            RectTransform rect = storyButton.GetComponent<RectTransform>();
+            if (rect != null) rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, targetY);
+        }
+        if (ruleButton != null)
+        {
+            RectTransform rect = ruleButton.GetComponent<RectTransform>();
+            if (rect != null) rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, targetY);
         }
     }
 
@@ -96,17 +133,37 @@ public class GameController : MonoBehaviour
     public void OnStartButtonPressed()
     {
         startGamen.gameObject.SetActive(false);
+        storyGamen.gameObject.SetActive(false);
+        ruleGamen.gameObject.SetActive(false);
         startButton.gameObject.SetActive(false);
+        storyButton.gameObject.SetActive(false);
+        ruleButton.gameObject.SetActive(false);
         statusText.text = "";
         demoPlayerObject.SendMessage("OnStartButton");
         stageManager.SendMessage("OnStartButton");
         kao.SendMessage("OnStart");
-    }    
+    }
+
+    public void OnStoryButtonPressed()
+    {
+        MoveButtonsDown();
+        ruleGamen.gameObject.SetActive(false);
+        storyGamen.gameObject.SetActive(true);
+    }
+
+    public void OnRuleButtonPressed()
+    {
+        // ボタンを下方向に10移動
+        MoveButtonsDown();
+        storyGamen.gameObject.SetActive(false);
+        ruleGamen.gameObject.SetActive(true);
+    }
     public void AllDemosFinished()
     {
         statusText.text = "デモプレイ完了。学習を開始できます。";
         kao.SendMessage("OnStop");
         trainButton.gameObject.SetActive(true); // 学習ボタンを表示
+        moveCamera.SendMessage("DemoplayFinished");
         demoPlayerObject.SetActive(false);    // デモプレイヤーを非表示
         
     }
@@ -144,59 +201,57 @@ public class GameController : MonoBehaviour
     }
 
     /// <summary>
-    /// Pythonプロセスを実行し、完了を待つコルーチン
+    /// Pythonプロセスを実行し、完了を待つコルーチン（非ブロッキング）
     /// </summary>
     IEnumerator RunPythonScript()
     {
-        // Pythonスクリプトのフルパスを取得
-        //string scriptFullPath = Path.Combine(Application.dataPath, "..", pythonScriptPath);
         string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainex");
 
-        // --- 1. Pythonプロセスを開始 ---
         ProcessStartInfo startInfo = new ProcessStartInfo();
-        //startInfo.FileName = pythonExePath;
         startInfo.FileName = scriptFullPath;
-        //startInfo.Arguments = $"\"{scriptFullPath}\""; // スクリプトパスを引数として渡す
-        startInfo.Arguments = ""; // 引数なしで実行
+        startInfo.Arguments = "";
         startInfo.UseShellExecute = false;
         startInfo.RedirectStandardOutput = true;
         startInfo.RedirectStandardError = true;
-        startInfo.CreateNoWindow = true; // コンソールウィンドウを非表示
+        startInfo.CreateNoWindow = true;
 
         Process process = new Process { StartInfo = startInfo };
         
         UnityEngine.Debug.Log($"Python実行: {scriptFullPath}");
-        
         process.Start();
 
-        // (オプション) Pythonの出力を読み取る
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
+        // 別スレッドでプロセスの完了を監視
+        bool processCompleted = false;
+        string output = "";
+        string error = "";
+        int exitCode = 0;
 
-        // プロセスが終了するまで待機
-        yield return new WaitUntil(() => process.HasExited);
+        Task.Run(() =>
+        {
+            output = process.StandardOutput.ReadToEnd();
+            error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            exitCode = process.ExitCode;
+            processCompleted = true;
+        });
 
-        // --- 2. プロセス終了後の処理 ---
+        // メインスレッドで毎フレーム進行状況を確認（ブロックしない）
+        yield return new WaitUntil(() => processCompleted);
+
+        // --- プロセス終了後の処理 ---
         isTraining = false;
 
-        if (process.ExitCode != 0)
+        if (exitCode != 0)
         {
-            // 学習失敗
             UnityEngine.Debug.LogError($"Python学習エラー: {error}");
             statusText.text = "学習に失敗しました。詳細はコンソールを確認してください。";
-            trainButton.gameObject.SetActive(true); // 再試行できるようにボタンを戻す
+            trainButton.gameObject.SetActive(true);
         }
         else
         {
-            // 学習成功
             UnityEngine.Debug.Log($"Python学習完了: {output}");
             statusText.text = "学習完了。シミュレーションボタンが有効になりました。";
-            
-            // simulateButtonをアクティブにして、ゲームを進められるようにする
             simulateButton.gameObject.SetActive(true);
-            
-            // --- 3. JSONファイルの存在確認 ---
-            //CheckForModelFiles();
         }
     }
 
@@ -234,17 +289,49 @@ public class GameController : MonoBehaviour
         aiPlayerObject.SendMessage("Onstart");
     }
 
-    public void OnAIGoal()
+    public void OnAIGoal1()
     {
-        statusText.text = "AIがゴールしました！シミュレーション完了。";
-        clearGamen.gameObject.SetActive(true);
+        StartCoroutine(ShiroOn());
+    }
+    public void OnAIGoal2()
+    {
         aiPlayerObject.SetActive(false);
         restartButton.gameObject.SetActive(true);
 
         // AI思考プロセスUIを非表示
         if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
         if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
+
+        startGamen.gameObject.SetActive(true);
+        startButton.gameObject.SetActive(true);
+        storyButton.gameObject.SetActive(true);
+        ruleButton.gameObject.SetActive(true);
     }
+
+    public IEnumerator ShiroOn()
+    {
+        yield return new WaitForSeconds(0.5f);
+        siro.gameObject.SetActive(true);
+        siro.color = new Color(1, 1, 1, 0);
+        float fadeDuration = 1.5f; // フェード時間
+        float elapsedTime = 0;
+
+        while (elapsedTime < fadeDuration)
+        {
+            elapsedTime += Time.deltaTime;
+            float alpha = elapsedTime / fadeDuration; // 0 → 1
+
+            if (siro != null)
+            {
+                siro.color = new Color(1, 1, 1, alpha);
+            }
+
+            yield return null;
+        }
+        yield return new WaitForSeconds(0.5f);
+        siro.gameObject.SetActive(false);
+    }
+
     int falseCount = 0;
     public void OnAIFall()
     {
@@ -266,7 +353,6 @@ public class GameController : MonoBehaviour
     {
         
         restartButton.gameObject.SetActive(false);
-        clearGamen.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
         falseCount = 0;
 
@@ -280,4 +366,37 @@ public class GameController : MonoBehaviour
         stageManager.SendMessage("OnRestartButton");
         kao.SendMessage("OnStart");
     }
+
+    public void KuroOn()
+    {
+        kuro.gameObject.SetActive(true);
+        kuro.color = new Color(0,0,0,0);
+        StartCoroutine(FadeKuro());
+    }
+
+    public IEnumerator FadeKuro()
+    {
+        float fadeDuration = 1.5f; // フェード時間
+        float elapsedTime = 0;
+
+        yield return new WaitForSeconds(0.5f);
+
+        while (elapsedTime < fadeDuration)
+        {
+            elapsedTime += Time.deltaTime;
+            float alpha = elapsedTime / fadeDuration; // 0 → 1
+            
+            if (kuro != null)
+            {
+                kuro.color = new Color(0, 0, 0, alpha);
+            }
+            
+            yield return null;
+        }
+
+        yield return new WaitForSeconds(0.5f);
+        kuro.gameObject.SetActive(false);
+
+    }
+
 }

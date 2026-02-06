@@ -18,6 +18,7 @@ public class AIController : MonoBehaviour
     private StageManager stageManager;
     private Rigidbody rb;
     public Text thinkingText;
+    private AIVisualizer visualizer;
 
     [Header("--- 移動・試行設定 ---")]
     [SerializeField] private float thinkInterval = 0.5f;
@@ -111,12 +112,19 @@ public class AIController : MonoBehaviour
         attemptCount = 0;
         visitedTiles.Clear();
 
+        // ビジュアライザーの初期化
+        visualizer = GetComponent<AIVisualizer>();
+        if (visualizer == null)
+        {
+            visualizer = gameObject.AddComponent<AIVisualizer>();
+        }
+
         // ランダムフォレスト用のノイズ係数を初期化
         InitializeRandomForest();
 
         // モデルの読み込み（model_data.json + parameters.json）
         LoadAIModels();
-
+        rb.isKinematic = false;
         // 実行開始
         StartCoroutine(MainLoop());
     }
@@ -139,7 +147,8 @@ public class AIController : MonoBehaviour
         while (attemptCount < maxAttempts)
         {
             ResetToStart();
-            yield return new WaitForSeconds(0.5f);
+            yield return new WaitForSeconds(1.0f);
+            rb.isKinematic = true;
 
             while (true)
             {
@@ -225,6 +234,15 @@ public class AIController : MonoBehaviour
         string info = BuildThinkingInfo(px, pz, envUp, envDown, envRight, envLeft, 
                                          treeScores, bcScores, finalScores, bestAction);
         UpdateThinkingUI(info);
+
+        visualizer.SendMessage("ShowScores");
+        // ビジュアライザーの更新
+        if (visualizer != null)
+        {
+            visualizer.UpdateScoreValues(finalScores);
+            visualizer.UpdateGoalPosition(goalKnown ? estimatedGoal : new Vector2Int(-1, -1));
+            visualizer.UpdateDangerZones(dangerZones);
+        }
 
         return bestAction;
     }
@@ -467,6 +485,9 @@ public class AIController : MonoBehaviour
         {
             Debug.LogWarning("  parameters.json が見つかりません。");
         }
+
+        // 3. 鏡ステージ用に座標を左右反転
+        FlipCoordinatesForMirrorStage();
 
         // 読み込み結果のサマリー
         Debug.Log($"=== AIモデル読み込み完了 ===");
@@ -715,6 +736,32 @@ public class AIController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 鏡ステージ（mStage）用にゴール座標と危険地帯の座標を左右反転
+    /// ステージ幅（xMax - xMin）に基づいて座標を反転
+    /// </summary>
+    private void FlipCoordinatesForMirrorStage()
+    {
+        // ゴール座標の左右反転
+        if (goalKnown && estimatedGoal.x >= 0)
+        {
+            estimatedGoal.x = -estimatedGoal.x;
+            Debug.Log($"  [鏡ステージ] ゴール座標を反転: ({estimatedGoal.x},{estimatedGoal.y})");
+        }
+        
+        // 危険地帯の左右反転
+        if (dangerZones.Count > 0)
+        {
+            HashSet<Vector2Int> flippedDangerZones = new HashSet<Vector2Int>();
+            foreach (Vector2Int zone in dangerZones)
+            {
+                flippedDangerZones.Add(new Vector2Int(-zone.x, zone.y));
+            }
+            dangerZones = flippedDangerZones;
+            Debug.Log($"  [鏡ステージ] 危険地帯の座標を反転: {dangerZones.Count}箇所");
+        }
+    }
+
     #endregion
 
     #region 3. 移動・物理挙動（基本変更不要）
@@ -731,6 +778,9 @@ public class AIController : MonoBehaviour
         float angle = (action == 1) ? 0 : (action == 2) ? 90 : (action == 3) ? 180 : -90;
         transform.rotation = Quaternion.Euler(0, angle, 0);
 
+        yield return new WaitForSeconds(0.5f);
+
+        visualizer.SendMessage("HideScores");
         // B. 移動アニメーション
         float duration = 0.25f;
         float elapsed = 0f;
@@ -751,14 +801,10 @@ public class AIController : MonoBehaviour
         {
             yield return StartCoroutine(HandleTrap());
         }
-        else if (env == 0)
-        {
-            rb.isKinematic = false;
-            yield return new WaitForSeconds(3.0f);
-        }
-
         isMoving = false;
     }
+
+    private Coroutine trapCoroutine; // 現在実行中のトラップコルーチンを記録
 
     private IEnumerator HandleTrap()
     {
@@ -772,6 +818,9 @@ public class AIController : MonoBehaviour
 
         float duration = 1.0f;
         float elapsed = 0f;
+
+        yield return new WaitForSeconds(0.25f);
+        visualizer.SendMessage("HideScores");
         while (elapsed < duration)
         {
             elapsed += Time.deltaTime;
@@ -784,11 +833,10 @@ public class AIController : MonoBehaviour
         transform.position = end;
 
         int env = GetEnvType((int)end.x, (int)end.z);
-        if (env == 0) {
-            rb.isKinematic = false;
-            yield return new WaitForSeconds(3.0f);
+        if (env == 3) 
+        {
+            trapCoroutine = StartCoroutine(HandleTrap()); // コルーチン参照を保存
         }
-        if (env == 3) yield return StartCoroutine(HandleTrap()); // 連続罠
     }
 
     #endregion
@@ -800,13 +848,19 @@ public class AIController : MonoBehaviour
         attemptCount++;
         currentStep = 0;
         isMoving = false;
-        rb.isKinematic = true;
         rb.linearVelocity = Vector3.zero;
 
         // ステージ移動後は単純な座標計算
         float randomX = Mathf.Round(UnityEngine.Random.Range(-2f, 2f));
         transform.position = startBasePos + new Vector3(randomX, 0, 0);
         transform.rotation = Quaternion.identity;
+
+        // ビジュアライザーの初期化
+        if (visualizer != null)
+        {
+            visualizer.UpdateGoalPosition(goalKnown ? estimatedGoal : new Vector2Int(-1, -1));
+            visualizer.UpdateDangerZones(dangerZones);
+        }
 
         UpdateThinkingUI($"=== 試行 {attemptCount}/{maxAttempts} 開始 ===");
     }
@@ -825,17 +879,70 @@ public class AIController : MonoBehaviour
         if (reason == "Goal")
         {
             UpdateThinkingUI("🎯 ゴール到達！");
-            if (GameController.instance != null) GameController.instance.OnAIGoal();
-            yield return new WaitForSeconds(1.5f);
+            StartCoroutine(GOAL());
+            yield return new WaitForSeconds(2.0f);
+            GameController.instance.OnAIGoal1();
+            yield return new WaitForSeconds(3.0f);
+            GameController.instance.OnAIGoal2();
         }
         else
         {
             UpdateThinkingUI($"💀 終了: {reason}");
-            if (GameController.instance != null) GameController.instance.OnAIFall();
-            yield return new WaitForSeconds(1.0f);
+            StartCoroutine(FALL());
+            GameController.instance.KuroOn();
+            yield return new WaitForSeconds(2.5f);
         }
     }
 
+    IEnumerator GOAL()
+    {
+        float duration = 5.0f;
+        float elapsed = 0f;
+        Vector3 start = transform.position;
+        Vector3 end = start + Vector3.forward * 5f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            transform.position = Vector3.Lerp(start, end, elapsed / duration);
+            yield return null;
+        }
+        transform.position = end;
+    }
+
+    /// <summary>
+    /// 鏡との衝突検出 - トラップ飛行中に鏡に接触した場合、落下処理に遷移
+    /// </summary>
+    private void OnTriggerEnter(Collider col)
+    {
+        // 鏡との衝突を検出
+        if (col.CompareTag("Mirror"))
+        {
+            Debug.Log("[AI] 鏡に衝突！トラップをキャンセルして落下させます");
+            
+            // トラップコルーチンのみを停止
+            if (trapCoroutine != null)
+            {
+                StopCoroutine(trapCoroutine);
+                trapCoroutine = null;
+            }
+            
+            // 物理演算を有効化して落下させる
+            rb.isKinematic = false;
+            
+            // 落下コルーチンを開始
+            StartCoroutine(FALL());
+        }
+    }
+
+    IEnumerator FALL()
+    {
+        rb.isKinematic = false;
+        yield return new WaitForSeconds(2.0f);
+        rb.isKinematic = true;
+        yield return new WaitForSeconds(0.5f);
+        if (GameController.instance != null) GameController.instance.OnAIFall();
+    }
     private int GetEnvType(int x, int z) => stageManager ? stageManager.GetMTileState(x, z) : 0;
 
     private Vector3 GetRoundedPos() => new Vector3(Mathf.Round(transform.position.x), transform.position.y, Mathf.Round(transform.position.z));

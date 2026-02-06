@@ -8,6 +8,7 @@ using System.IO;
 using System;
 using System.Numerics;
 using Unity.VisualScripting;
+using UnityEngine.UI;
 //using UnityEditor.SceneManagement;
 
 public class movP : MonoBehaviour
@@ -17,12 +18,14 @@ public class movP : MonoBehaviour
     private int demoCount = 0;
     private int demoMaxCount = 7;
     private bool isMoving = false;
+    public Text logText;
+    public Text countText;
 
     private const int rewardGOAL = 1000;
     private const int rewardFALL = -500;
 
     private StageManager stageManager;
-    public GameObject mirrorHibi;
+    public MirrorHibi mirrorHibi;
 
     private List<string> Plogs = new List<string>();
     private Rigidbody rb;
@@ -31,6 +34,8 @@ public class movP : MonoBehaviour
     private bool isGameActive = false;
 
     private Dictionary<Vector2Int, int> visitedTiles = new Dictionary<Vector2Int, int>();
+
+    private Coroutine trapCoroutine; // 現在実行中のトラップコルーチンを記録
 
     void Start()
     {
@@ -147,12 +152,81 @@ public class movP : MonoBehaviour
         }
         Plogs.Add("times,nowX,nowY,env,envUp,envDown,envRight,envLeft,action,reward");
         if(pInput != null) pInput.enabled = true;
+        
+        // カウント表示更新（アニメーション付き）
+        UpdateCountDisplay();
+    }
+
+    /// <summary>
+    /// カウント表示を更新する（画面中央に大きく表示 → 左上に移動するアニメーション）
+    /// </summary>
+    private void UpdateCountDisplay()
+    {
+        if (countText != null)
+        {
+            StartCoroutine(AnimateCountText());
+        }
+    }
+
+    /// <summary>
+    /// カウントテキストのアニメーション
+    /// </summary>
+    private IEnumerator AnimateCountText()
+    {
+        // 初期位置を保存（左上）
+        RectTransform rectTransform = countText.GetComponent<RectTransform>();
+        UnityEngine.Vector3 initialPos = rectTransform.anchoredPosition;
+        UnityEngine.Vector3 initialScale = rectTransform.localScale;
+        Color initialColor = countText.color;
+
+        // 画面中央に大きく表示
+        UnityEngine.Vector3 centerPos = UnityEngine.Vector3.zero;
+        UnityEngine.Vector3 largeScale = new UnityEngine.Vector3(3f, 3f, 3f);
+
+        // テキスト内容を更新
+        countText.text = $"{demoCount}/{demoMaxCount}";
+
+        // 0.3秒かけて中央に大きく表示
+        float duration = 0.3f;
+        float elapsed = 0;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = elapsed / duration;
+            rectTransform.anchoredPosition = UnityEngine.Vector3.Lerp(initialPos, centerPos, t);
+            rectTransform.localScale = UnityEngine.Vector3.Lerp(initialScale, largeScale, t);
+            yield return null;
+        }
+
+        // 0.5秒待機
+        yield return new WaitForSeconds(0.5f);
+
+        // 0.5秒かけて左上に移動して縮小
+        duration = 0.5f;
+        elapsed = 0;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = elapsed / duration;
+            rectTransform.anchoredPosition = UnityEngine.Vector3.Lerp(centerPos, initialPos, t);
+            rectTransform.localScale = UnityEngine.Vector3.Lerp(largeScale, initialScale, t);
+            yield return null;
+        }
+
+        // 最終位置と大きさを確定
+        rectTransform.anchoredPosition = initialPos;
+        rectTransform.localScale = initialScale;
     }
     IEnumerator startFall()
     {
         pInput.enabled = false;
         rb.isKinematic = false;
         yield return new WaitForSeconds(1f);
+        getEnvType((int)transform.position.x, (int)transform.position.z);
+        getEnvType((int)transform.position.x, (int)transform.position.z + 1);
+        getEnvType((int)transform.position.x, (int)transform.position.z - 1);
+        getEnvType((int)transform.position.x + 1, (int)transform.position.z);
+        getEnvType((int)transform.position.x - 1, (int)transform.position.z);
         rb.isKinematic = true;
         pInput.enabled = true;
     }
@@ -160,6 +234,15 @@ public class movP : MonoBehaviour
     private int getEnvType(int x, int z)
     {
         return stageManager.GetTileState(x, z);//2=ゴール,1=ステージあり,0=穴
+    }
+
+    /// <summary>
+    /// ログテキストに追加表示する
+    /// </summary>
+    private void AddLogToDisplay(string logMessage)
+    {
+        logText.text = ""; // 一旦クリアしてから再表示
+        logText.text += logMessage;
     }
 
     public void OnMove(InputValue value)
@@ -228,6 +311,7 @@ public class movP : MonoBehaviour
         if (envValue == 2)//GOAl
         {
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
+            AddLogToDisplay($"ゴール 報酬: {rewardGOAL}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
             GetComponent<PlayerInput>().enabled = false;
             StartCoroutine(GOAL());
@@ -259,26 +343,29 @@ public class movP : MonoBehaviour
             {
                 visitedTiles[tilePos] = 1;
             }
+            
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
+            AddLogToDisplay($"移動 報酬: {rewardSTEP}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
         }
         else if (envValue == 0)//FALL
         {
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
+            AddLogToDisplay($"落下 報酬: {rewardFALL}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
-            GetComponent<PlayerInput>().enabled = false;
-            Debug.Log("FALLlllllllllllllll");
-            rb.isKinematic = false;
+            StartCoroutine(FALL());
+            GameController.instance.KuroOn();
         }
         else if (envValue == 3)
         {
-            StartCoroutine(Trapped());
+            trapCoroutine = StartCoroutine(Trapped()); // コルーチン参照を保存
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+            AddLogToDisplay($"トラップ");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
         }
-
-        isMoving = false;
         pMCount++;
+        pInput.enabled = true;
+        isMoving = false;
     }
 
     IEnumerator Trapped()
@@ -296,7 +383,7 @@ public class movP : MonoBehaviour
         };
         int action = UnityEngine.Random.Range(0, directions.Length);
         UnityEngine.Vector3 direction = directions[action];
-        action++;//log用に1増やす
+        action++;//用に1増やす
 
         // 移動先のターゲット位置を計算
         UnityEngine.Vector3 startPos = transform.position;
@@ -344,6 +431,7 @@ public class movP : MonoBehaviour
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardGOAL}");
             GetComponent<PlayerInput>().enabled = false;
+            AddLogToDisplay($"ゴール 報酬: {rewardGOAL}");
             StartCoroutine(GOAL());
         }
         else if (envValue == 1)//stage
@@ -375,19 +463,22 @@ public class movP : MonoBehaviour
             }
             
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
+            AddLogToDisplay($"移動 報酬: {rewardSTEP}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardSTEP}");
         }
         else if (envValue == 0)//FALL
         {
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
+            AddLogToDisplay($"落下 報酬: {rewardFALL}");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},{rewardFALL}");
-            GetComponent<PlayerInput>().enabled = false;
-            rb.isKinematic = false;
+            StartCoroutine(FALL());
+            GameController.instance.KuroOn();
         }
         else if (envValue == 3)
         {
-            StartCoroutine(Trapped());
+            trapCoroutine = StartCoroutine(Trapped()); // コルーチン参照を保存
             Plogs.Add($"{pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
+            AddLogToDisplay($"トラップ");
             Debug.Log($"Logs: {pMCount},{targetPos.x},{targetPos.z},{envValue},{envUp},{envDown},{envRight},{envLeft},{action},-1");
         }
         pMCount++;
@@ -399,22 +490,51 @@ public class movP : MonoBehaviour
         yield return new WaitForSeconds(1f);
         endLog();
         ResetStage();
-        mirrorHibi.SendMessage("AdvanceCrackStage");
+        mirrorHibi.SendMessage("HibiChange");
+    }
+    IEnumerator FALL()
+    {
+        pInput.enabled = false;
+        rb.isKinematic = false;
+        yield return new WaitForSeconds(2.0f);
+        rb.isKinematic = true;
+        pInput.enabled = true;
+        yield return new WaitForSeconds(0.5f);
+        endLog();
+        ResetStage();
+        mirrorHibi.SendMessage("HibiChange");
     }
     
     //結果判定
-    
-    private void OnTriggerEnter(Collider other)
-    {
-        if (other.gameObject.CompareTag("Ana"))
-        {
-            endLog();
-            ResetStage();
-        }
-    }
     public void endLog()//logをcsvで保存
     {
         string path = Application.dataPath + "/DemoLogs/Plog"+demoCount+".csv";
         File.WriteAllLines(path, Plogs);
+    }
+
+    /// <summary>
+    /// 鏡との衝突検出 - トラップ飛行中に鏡に接触した場合、落下処理に遷移
+    /// </summary>
+    private void OnTriggerEnter(Collider col)
+    {
+        // 鏡との衝突を検出
+        if (col.CompareTag("Mirror"))
+        {
+            Debug.Log("鏡に衝突！トラップをキャンセルして落下させます");
+            
+            // トラップコルーチンのみを停止
+            if (trapCoroutine != null)
+            {
+                StopCoroutine(trapCoroutine);
+                trapCoroutine = null;
+            }
+            
+            // 入力を無効化
+            pInput.enabled = false;
+            
+            // 落下処理を開始
+            StartCoroutine(FALL());
+            GameController.instance.KuroOn();
+        }
     }
 }

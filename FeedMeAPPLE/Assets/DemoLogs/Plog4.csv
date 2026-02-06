@@ -1,0 +1,2 @@
+times,nowX,nowY,env,envUp,envDown,envRight,envLeft,action,reward
+0,0,24,2,2,1,2,2,1,1000
