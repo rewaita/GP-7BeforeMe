@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-03-17T01:15:03.818127",
+  "estimated_goal": {
+    "x": -1,
+    "y": -1,
+    "known": false
+  },
+  "danger_zones": [
+    {
+      "x": 0,
+      "y": 4
+    },
+    {
+      "x": -8,
+      "y": 0
+    },
+    {
+      "x": -9,
+      "y": 0
+    },
+    {
+      "x": -3,
+      "y": 2
+    },
+    {
+      "x": 6,
+      "y": 15
+    },
+    {
+      "x": 1,
+      "y": 3
+    },
+    {
+      "x": 1,
+      "y": -6
+    }
+  ],
+  "bc_policy": {
+    "1,1,1,1": {
+      "up": 0.25,
+      "right": 0.125,
+      "down": 0.0,
+      "left": 0.625,
+      "samples": 8
+    },
+    "1,1,1,0": {
+      "up": 0.5,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.5,
+      "samples": 2
+    },
+    "0,1,0,0": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 2
+    },
+    "1,1,0,1": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "0,0,1,0": {
+      "up": 0.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 1.0,
+      "samples": 1
+    },
+    "0,0,0,0": {
+      "up": 0.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 1.0,
+      "samples": 1
+    },
+    "0,1,1,1": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "9,1,1,1": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "9,9,1,9": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "1,9,0,9": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "1,0,1,9": {
+      "up": 0.5,
+      "right": 0.0,
+      "down": 0.5,
+      "left": 0.0,
+      "samples": 2
+    },
+    "0,1,9,1": {
+      "up": 1.0,
+      "right": 0.0,
+      "down": 0.0,
+      "left": 0.0,
+      "samples": 2
+    },
+    "1,9,1,1": {
+      "up": 0.0,
+      "right": 0.0,
+      "down": 1.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "9,1,1,9": {
+      "up": 0.0,
+      "right": 0.0,
+      "down": 1.0,
+      "left": 0.0,
+      "samples": 1
+    },
+    "1,0,0,0": {
+      "up": 0.0,
+      "right": 0.0,
+      "down": 1.0,
+      "left": 0.0,
+      "samples": 1
+    }
+  },
+  "decision_weights": {
+    "hole_fear_index": -1.43,
+    "trap_interest": 0.0,
+    "goal_bias": 0.5,
+    "goal_approach_rate": 0.5
+  },
+  "direction_scores": {
+    "tile_scores": {
+      "hole": -500,
+      "flat": 0,
+      "goal": 100,
+      "trap": -10
+    },
+    "goal_direction_bonus": 10,
+    "revisit_penalty": -5,
+    "unexplored_bonus": 5
+  }
+}

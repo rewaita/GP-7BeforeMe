@@ -86,13 +86,13 @@ public class movP : MonoBehaviour
         // 変数等の完全リセット
         demoCount = 0;
         isMoving = false;
+        logText.gameObject.SetActive(true);
+        countText.gameObject.SetActive(true);
         
         // ログファイルの全削除（完全な初期状態へ）
         InitializeLogsAndFiles();
 
         // 状態をアクティブにしてリセット再開
-        isGameActive = true;
-        SetPlayerActive(true);
         ResetStage();
     }
 
@@ -255,6 +255,7 @@ public class movP : MonoBehaviour
             UnityEngine.Vector3 Muki = new UnityEngine.Vector3(Mathf.RoundToInt(inputVector.x), 0, Mathf.RoundToInt(inputVector.y));//.normalized;
             UnityEngine.Vector3 targetPos = transform.position + Muki;
             StartCoroutine(MoveToPos(targetPos));
+            if(pInput != null) pInput.enabled = false;
         }
     }
     IEnumerator MoveToPos(UnityEngine.Vector3 targetPos)

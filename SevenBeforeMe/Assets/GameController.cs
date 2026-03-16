@@ -255,6 +255,17 @@ public class GameController : MonoBehaviour
     {
         if (isTraining) return; // 既に学習中なら何もしない
 
+        // movPクラスのUI要素（ログとカウント）を非表示にする
+        if (demoPlayerObject != null)
+        {
+            movP movP = demoPlayerObject.GetComponent<movP>();
+            if (movP != null)
+            {
+                if (movP.logText != null) movP.logText.gameObject.SetActive(false);
+                if (movP.countText != null) movP.countText.gameObject.SetActive(false);
+            }
+        }
+
         isTraining = true;
         trainButton.gameObject.SetActive(false);
         statusText.text = "AI学習中...しばらくお待ちください";
@@ -376,7 +387,7 @@ public class GameController : MonoBehaviour
     public void OnAIGoal2()
     {
         aiPlayerObject.SetActive(false);
-        restartButton.gameObject.SetActive(true);
+        restartButton.gameObject.SetActive(false);
 
         // AI思考プロセスUIを非表示
         if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
@@ -390,7 +401,6 @@ public class GameController : MonoBehaviour
 
     public IEnumerator ShiroOn()
     {
-        yield return new WaitForSeconds(0.5f);
         siro.gameObject.SetActive(true);
         siro.color = new Color(1, 1, 1, 0);
         float fadeDuration = 1.5f; // フェード時間
@@ -408,7 +418,7 @@ public class GameController : MonoBehaviour
 
             yield return null;
         }
-        yield return new WaitForSeconds(0.5f);
+        yield return new WaitForSeconds(2.5f);
         siro.gameObject.SetActive(false);
     }
 
@@ -427,10 +437,42 @@ public class GameController : MonoBehaviour
 
     public void OnRestartButtonPressed()
     {
-        
+        // データの初期化と学習データの削除
+        if (demoPlayerObject != null)
+        {
+            movP movP = demoPlayerObject.GetComponent<movP>();
+            if (movP != null) movP.OnRestartButton();
+        }
+
+        if (stageManager != null)
+        {
+            stageManager.OnRestartButton();
+        }
+
+        // UIを最初のタイトル画面の状態に戻す
         restartButton.gameObject.SetActive(false);
         if (restartSimulationButton != null) restartSimulationButton.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
+        startGamen.gameObject.SetActive(true);
+        storyGamen.gameObject.SetActive(false);
+        ruleGamen.gameObject.SetActive(false);
+        rules2.gameObject.SetActive(false);
+        rules3.gameObject.SetActive(false);
+        rules4.gameObject.SetActive(false);
+        kuro.gameObject.SetActive(false);
+        siro.gameObject.SetActive(false);
+
+        // ボタンの表示状態を戻す
+        startButton.gameObject.SetActive(true);
+        storyButton.gameObject.SetActive(true);
+        ruleButton.gameObject.SetActive(true);
+        trainButton.gameObject.SetActive(false);
+        simulateButton.gameObject.SetActive(false);
+
+        if (nextRuleButton != null) nextRuleButton.gameObject.SetActive(false);
+        if (prevRuleButton != null) prevRuleButton.gameObject.SetActive(false);
+
+        statusText.text = "デモプレイを開始してください。";
 
         // AI思考プロセスUIを非表示
         if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
@@ -438,8 +480,6 @@ public class GameController : MonoBehaviour
 
         aiPlayerObject.SetActive(false);
         demoPlayerObject.SetActive(true);
-        demoPlayerObject.SendMessage("OnRestartButton");
-        stageManager.SendMessage("OnRestartButton");
         kao.SendMessage("OnStart");
     }
 

@@ -1,0 +1,17 @@
+{
+  "estimated_goal": "unknown",
+  "hole_fear_index": -1.43,
+  "trap_interest": 0.0,
+  "goal_bias": 0.5,
+  "description": {
+    "estimated_goal": "推定されたゴール座標 (x,y)",
+    "hole_fear_index": "穴を避ける強さ（負の値ほど回避傾向）",
+    "trap_interest": "罠への積極性（-1.0=回避、1.0=積極）",
+    "goal_bias": "ゴールを優先する度合い（0.0~1.0）"
+  },
+  "statistics": {
+    "bc_states": 15,
+    "danger_zones": 7,
+    "unexplored_areas": 342
+  }
+}
