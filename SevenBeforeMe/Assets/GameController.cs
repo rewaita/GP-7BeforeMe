@@ -16,6 +16,7 @@ public class GameController : MonoBehaviour
     public Button simulateButton;
     public Button startButton;
     public Button restartButton;
+    public Button restartSimulationButton; // シミュレーションをやり直すボタン
     public Button storyButton;
     public Button ruleButton;
     public Text statusText;
@@ -28,6 +29,15 @@ public class GameController : MonoBehaviour
     public RawImage failGamen;
     public RawImage storyGamen;
     public RawImage ruleGamen;
+    public RawImage rules2;
+    public RawImage rules3;
+    public RawImage rules4;
+    [Header("Rule Settings")]
+    public RawImage[] ruleImages; // 4枚の画像をセット
+    public Button nextRuleButton;
+    public Button prevRuleButton;
+    private int currentRuleIndex = 0;
+
     public RawImage kuro;
     public RawImage siro;
 
@@ -70,14 +80,24 @@ public class GameController : MonoBehaviour
         failGamen.gameObject.SetActive(false);
         storyGamen.gameObject.SetActive(false);
         ruleGamen.gameObject.SetActive(false);
+        rules2.gameObject.SetActive(false);
+        rules3.gameObject.SetActive(false);
+        rules4.gameObject.SetActive(false);
         kuro.gameObject.SetActive(false);
         siro.gameObject.SetActive(false);
+
+        // ルールスライドボタンの非表示
+        if (nextRuleButton != null) nextRuleButton.gameObject.SetActive(false);
+        if (prevRuleButton != null) prevRuleButton.gameObject.SetActive(false);
+        if (nextRuleButton != null) nextRuleButton.onClick.AddListener(OnNextRuleButtonPressed);
+        if (prevRuleButton != null) prevRuleButton.onClick.AddListener(OnPrevRuleButtonPressed);
 
         statusText.text = "デモプレイを開始してください。";
         startButton.gameObject.SetActive(true);
         storyButton.gameObject.SetActive(true);
         ruleButton.gameObject.SetActive(true);
         restartButton.gameObject.SetActive(false);
+        restartSimulationButton.gameObject.SetActive(false);
 
         // AI思考プロセスUIの初期化
         if (aiThinkingText != null)
@@ -135,10 +155,15 @@ public class GameController : MonoBehaviour
         startGamen.gameObject.SetActive(false);
         storyGamen.gameObject.SetActive(false);
         ruleGamen.gameObject.SetActive(false);
+        if (nextRuleButton != null) nextRuleButton.gameObject.SetActive(false);
+        if (prevRuleButton != null) prevRuleButton.gameObject.SetActive(false);
         startButton.gameObject.SetActive(false);
         storyButton.gameObject.SetActive(false);
         ruleButton.gameObject.SetActive(false);
-        statusText.text = "";
+        rules2.gameObject.SetActive(false);
+        rules3.gameObject.SetActive(false);
+        rules4.gameObject.SetActive(false);
+        statusText.text = "デモプレイ：AI学習のためのデータを作成してください。";
         demoPlayerObject.SendMessage("OnStartButton");
         stageManager.SendMessage("OnStartButton");
         kao.SendMessage("OnStart");
@@ -148,15 +173,70 @@ public class GameController : MonoBehaviour
     {
         MoveButtonsDown();
         ruleGamen.gameObject.SetActive(false);
+        rules2.gameObject.SetActive(false);
+        rules3.gameObject.SetActive(false);
+        rules4.gameObject.SetActive(false);
+        startGamen.gameObject.SetActive(false);
+        if (nextRuleButton != null) nextRuleButton.gameObject.SetActive(false);
+        if (prevRuleButton != null) prevRuleButton.gameObject.SetActive(false);
         storyGamen.gameObject.SetActive(true);
     }
 
     public void OnRuleButtonPressed()
     {
-        // ボタンを下方向に10移動
+        // ボタンを下方向に移動
         MoveButtonsDown();
         storyGamen.gameObject.SetActive(false);
+        startGamen.gameObject.SetActive(false);
         ruleGamen.gameObject.SetActive(true);
+        rules2.gameObject.SetActive(true);
+        rules3.gameObject.SetActive(true);
+        rules4.gameObject.SetActive(true);
+
+        // 1枚目表示
+        currentRuleIndex = 0;
+        UpdateRuleDisplay();
+
+        if (nextRuleButton != null) nextRuleButton.gameObject.SetActive(true);
+        if (prevRuleButton != null) prevRuleButton.gameObject.SetActive(true);
+    }
+
+    private void UpdateRuleDisplay()
+    {
+        if (ruleImages == null || ruleImages.Length == 0) return;
+        
+        for (int i = 0; i < ruleImages.Length; i++)
+        {
+            if (ruleImages[i] != null)
+            {
+                ruleImages[i].gameObject.SetActive(i == currentRuleIndex);
+            }
+        }
+
+        // 基本のruleGamen(土台)は表示したままにする (もし背景等として必要なら)
+        // もしruleImages[0]がruleGamenなら上記ループで処理される
+
+        // 矢印ボタンの有効化/無効化 (ループさせない場合)
+        if (prevRuleButton != null) prevRuleButton.interactable = (currentRuleIndex > 0);
+        if (nextRuleButton != null) nextRuleButton.interactable = (currentRuleIndex < ruleImages.Length - 1);
+    }
+
+    public void OnNextRuleButtonPressed()
+    {
+        if (currentRuleIndex < ruleImages.Length - 1)
+        {
+            currentRuleIndex++;
+            UpdateRuleDisplay();
+        }
+    }
+
+    public void OnPrevRuleButtonPressed()
+    {
+        if (currentRuleIndex > 0)
+        {
+            currentRuleIndex--;
+            UpdateRuleDisplay();
+        }
     }
     public void AllDemosFinished()
     {
@@ -177,7 +257,7 @@ public class GameController : MonoBehaviour
 
         isTraining = true;
         trainButton.gameObject.SetActive(false);
-        statusText.text = "AI学習中... (ステージ移動中)";
+        statusText.text = "AI学習中...しばらくお待ちください";
 
         // 学習とステージ移動を並行実行
         StartCoroutine(TrainAndMoveStage());
@@ -250,7 +330,7 @@ public class GameController : MonoBehaviour
         else
         {
             UnityEngine.Debug.Log($"Python学習完了: {output}");
-            statusText.text = "学習完了。シミュレーションボタンが有効になりました。";
+            statusText.text = "学習完了。シミュレーションを開始して下さい。";
             simulateButton.gameObject.SetActive(true);
         }
     }
@@ -332,29 +412,25 @@ public class GameController : MonoBehaviour
         siro.gameObject.SetActive(false);
     }
 
-    int falseCount = 0;
     public void OnAIFall()
     {
-        falseCount++;
-        statusText.text = $"AIが落下しました！やり直し回数: {falseCount}";
-        if(falseCount>=3)
-        {
-            failGamen.gameObject.SetActive(true);
-            restartButton.gameObject.SetActive(true);
-            aiPlayerObject.SetActive(false);
+        failGamen.gameObject.SetActive(true);
+        restartButton.gameObject.SetActive(true);
+        restartButton.gameObject.SetActive(true);
+        if (restartSimulationButton != null) restartSimulationButton.gameObject.SetActive(true);
+        aiPlayerObject.SetActive(false);
 
-            // AI思考プロセスUIを非表示
-            if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
-            if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
-        }
+        // AI思考プロセスUIを非表示
+        if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
+        if (aiThinkingToggle != null) aiThinkingToggle.gameObject.SetActive(false);
     }
 
     public void OnRestartButtonPressed()
     {
         
         restartButton.gameObject.SetActive(false);
+        if (restartSimulationButton != null) restartSimulationButton.gameObject.SetActive(false);
         failGamen.gameObject.SetActive(false);
-        falseCount = 0;
 
         // AI思考プロセスUIを非表示
         if (aiThinkingText != null) aiThinkingText.gameObject.SetActive(false);
@@ -365,6 +441,39 @@ public class GameController : MonoBehaviour
         demoPlayerObject.SendMessage("OnRestartButton");
         stageManager.SendMessage("OnRestartButton");
         kao.SendMessage("OnStart");
+    }
+
+    public void OnRestartSimulationButtonPressed()
+    {
+        restartButton.gameObject.SetActive(false);
+        if (restartSimulationButton != null) restartSimulationButton.gameObject.SetActive(false);
+        failGamen.gameObject.SetActive(false);
+
+        statusText.text = "AIシミュレーション実行中...";
+
+        // AI思考プロセスUIを有効化
+        if (aiThinkingToggle != null)
+        {
+            aiThinkingToggle.gameObject.SetActive(true);
+            aiThinkingToggle.isOn = true;
+        }
+        if (aiThinkingText != null)
+        {
+            aiThinkingText.gameObject.SetActive(true);
+        }
+
+        // AIプレイヤーのGameObjectをアクティブにする
+        aiPlayerObject.SetActive(true);
+
+        // AIControllerにthinkingTextを渡す
+        AIController aiController = aiPlayerObject.GetComponent<AIController>();
+        if (aiController != null && aiThinkingText != null)
+        {
+            aiController.thinkingText = aiThinkingText;
+        }
+
+        // 学習データは保持したままOnstartを呼ぶ
+        aiPlayerObject.SendMessage("Onstart");
     }
 
     public void KuroOn()

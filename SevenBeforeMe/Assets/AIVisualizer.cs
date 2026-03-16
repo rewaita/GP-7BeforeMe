@@ -48,7 +48,6 @@ public class AIVisualizer : MonoBehaviour
     void ShowScores()
     {
         if (aiUICanvas != null) aiUICanvas.enabled = true;
-        aiUICanvas.transform.position = aiPlayer.transform.position + new Vector3(0, 2.0f, 0);
     }
     void HideScores()
     {

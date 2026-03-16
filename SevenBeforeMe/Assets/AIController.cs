@@ -23,7 +23,7 @@ public class AIController : MonoBehaviour
     [Header("--- 移動・試行設定 ---")]
     [SerializeField] private float thinkInterval = 0.5f;
     [SerializeField] private int maxStepsPerEpisode = 150;
-    [SerializeField] private int maxAttempts = 3;
+    [SerializeField] private int maxAttempts = 1;
     private Vector3 startBasePos = new Vector3(0, 2, 0);
 
     [Header("--- ハイブリッドAI設定 ---")]
@@ -107,6 +107,9 @@ public class AIController : MonoBehaviour
 
     public void Onstart()
     {
+        StopAllCoroutines(); // 走行中のループやコルーチンを停止
+        isMoving = false; // 移動フラグをリセット
+
         stageManager = FindFirstObjectByType<StageManager>();
         rb = GetComponent<Rigidbody>();
         attemptCount = 0;
@@ -122,8 +125,11 @@ public class AIController : MonoBehaviour
         // ランダムフォレスト用のノイズ係数を初期化
         InitializeRandomForest();
 
-        // モデルの読み込み（model_data.json + parameters.json）
-        LoadAIModels();
+        // モデルが未ロードの場合のみ読み込む（学習データ保持のため）
+        if (!modelLoaded)
+        {
+            LoadAIModels();
+        }
         rb.isKinematic = false;
         // 実行開始
         StartCoroutine(MainLoop());
@@ -144,36 +150,36 @@ public class AIController : MonoBehaviour
 
     private IEnumerator MainLoop()
     {
-        while (attemptCount < maxAttempts)
+        // attemptCount < maxAttempts のループを削除し、一度のみ実行
+        // ResetToStart内でattemptCount++される
+        ResetToStart();
+        yield return new WaitForSeconds(1.0f);
+        rb.isKinematic = true;
+
+        while (true)
         {
-            ResetToStart();
-            yield return new WaitForSeconds(1.0f);
-            rb.isKinematic = true;
+            // 1. 環境状態の確認
+            Vector3 currentPos = GetRoundedPos();
+            int env = GetEnvType((int)currentPos.x, (int)currentPos.z);
 
-            while (true)
+            // 2. 終了判定（落下・ゴール・歩数超過）
+            if (IsEpisodeEnd(env, out string reason))
             {
-                // 1. 環境状態の確認
-                Vector3 currentPos = GetRoundedPos();
-                int env = GetEnvType((int)currentPos.x, (int)currentPos.z);
-
-                // 2. 終了判定（落下・ゴール・歩数超過）
-                if (IsEpisodeEnd(env, out string reason))
-                {
-                    yield return HandleEpisodeEnd(reason, env);
-                    break; // 次の試行へ
-                }
-
-                // 3. 次の行動を決定（ハイブリッド方式）
-                if (!isMoving)
-                {
-                    int action = DecideNextAction(currentPos);
-                    StartCoroutine(MoveProcess(action));
-                }
-
-                yield return new WaitForSeconds(thinkInterval);
+                yield return HandleEpisodeEnd(reason, env);
+                break; // 終了
             }
+
+            // 3. 次の行動を決定（ハイブリッド方式）
+            if (!isMoving)
+            {
+                int action = DecideNextAction(currentPos);
+                StartCoroutine(MoveProcess(action));
+            }
+
+            yield return new WaitForSeconds(thinkInterval);
         }
-        UpdateThinkingUI("全ての試行が終了しました。");
+        
+        UpdateThinkingUI("シミュレーションが終了しました。");
     }
 
     #endregion

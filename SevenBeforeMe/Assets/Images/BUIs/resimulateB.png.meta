@@ -1,5 +1,5 @@
 fileFormatVersion: 2
-guid: 8918d223ddf9246a68c6c629f877983c
+guid: 3538021a698de40cc87306917e7a08d8
 TextureImporter:
   internalIDToNameTable: []
   externalObjects: {}
@@ -40,10 +40,10 @@ TextureImporter:
     wrapU: 0
     wrapV: 0
     wrapW: 0
-  nPOTScale: 0
+  nPOTScale: 1
   lightmap: 0
   compressionQuality: 50
-  spriteMode: 2
+  spriteMode: 0
   spriteExtrude: 1
   spriteMeshType: 1
   alignment: 0
@@ -108,34 +108,12 @@ TextureImporter:
     forceMaximumCompressionQuality_BC6H_BC7: 0
   spriteSheet:
     serializedVersion: 2
-    sprites:
-    - serializedVersion: 2
-      name: buttonNoAni_0
-      rect:
-        serializedVersion: 2
-        x: 0
-        y: 0
-        width: 300
-        height: 100
-      alignment: 0
-      pivot: {x: 0, y: 0}
-      border: {x: 0, y: 0, z: 0, w: 0}
-      customData: 
-      outline: []
-      physicsShape: []
-      tessellationDetail: 0
-      bones: []
-      spriteID: 7e06720e2253142db9f5ced46867b519
-      internalID: -1060094656
-      vertices: []
-      indices: 
-      edges: []
-      weights: []
+    sprites: []
     outline: []
     customData: 
     physicsShape: []
     bones: []
-    spriteID: b5c4d7be3e8a94f3a93b40aef5fe2b59
+    spriteID: 
     internalID: 0
     vertices: []
     indices: 
@@ -144,8 +122,7 @@ TextureImporter:
     secondaryTextures: []
     spriteCustomMetadata:
       entries: []
-    nameFileIdTable:
-      buttonNoAni_0: -1060094656
+    nameFileIdTable: {}
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 

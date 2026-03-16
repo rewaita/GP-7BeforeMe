@@ -5,6 +5,8 @@ public class moveCamera : MonoBehaviour
     public GameObject Pl;
     public GameObject AIpl;
 
+    public GameObject AIUIcanvas;
+
     [Header("--- ズーム設定 ---")]
     [SerializeField] private int zoomLevels = 200;  // ズームレベル数（0-200）
     [SerializeField] private float zoomCoolTime = 0.05f;  // ズーム入力のクールタイム（秒）
@@ -37,6 +39,8 @@ public class moveCamera : MonoBehaviour
             Vector3 cameraOffset = CalculateCameraOffset();
             transform.position = new Vector3(AIplPosition.x, AIplPosition.y + cameraOffset.y, AIplPosition.z - cameraOffset.z);
             transform.LookAt(AIpl.transform);
+            AIUIcanvas.transform.position = new Vector3(AIplPosition.x, AIplPosition.y + 2f, AIplPosition.z - cameraOffset.z*0.1f);
+            AIUIcanvas.transform.LookAt(transform);
         }
     }
 
