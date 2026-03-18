@@ -20,6 +20,9 @@ public class movP : MonoBehaviour
     private bool isMoving = false;
     public Text logText;
     public Text countText;
+    private string logLine1 = "";
+    private string logLine2 = "";
+    private string logLine3 = "";
 
     private const int rewardGOAL = 1000;
     private const int rewardFALL = -500;
@@ -101,6 +104,12 @@ public class movP : MonoBehaviour
         string deleteLogs = Application.dataPath + "/DemoLogs/";
         string deleteAIs = Application.dataPath + "/DemoAIs/";
         visitedTiles.Clear();
+
+        // ログ表示の初期化
+        logLine1 = "";
+        logLine2 = "";
+        logLine3 = "";
+        if (logText != null) logText.text = "";
 
         // ディレクトリが存在しない場合は作成しておく方が安全
         if (!Directory.Exists(deleteLogs)) Directory.CreateDirectory(deleteLogs);
@@ -241,8 +250,13 @@ public class movP : MonoBehaviour
     /// </summary>
     private void AddLogToDisplay(string logMessage)
     {
-        logText.text = ""; // 一旦クリアしてから再表示
-        logText.text += logMessage;
+        // ログ履歴をずらす
+        logLine3 = logLine2;
+        logLine2 = logLine1;
+        logLine1 = logMessage;
+
+        // 3行表示（3行目はリッチテキストで透明度を下げてフェードアウトを表現）
+        logText.text = $"{logLine1}\n{logLine2}\n<color=#00000080>{logLine3}</color>";
     }
 
     public void OnMove(InputValue value)
