@@ -296,7 +296,7 @@ public class GameController : MonoBehaviour
     /// </summary>
     IEnumerator RunPythonScript()
     {
-        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/dist/trainex");
+        string scriptFullPath = Path.Combine(Application.dataPath, "..", "Assets/StreamingAssets/dist/trainex");
 
         ProcessStartInfo startInfo = new ProcessStartInfo();
         startInfo.FileName = scriptFullPath;
